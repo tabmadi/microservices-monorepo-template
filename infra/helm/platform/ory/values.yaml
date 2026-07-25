@@ -13,6 +13,22 @@
 
 oathkeeper:
   enabled: true
+  deployment:
+    extraEnv:
+      - name: SQA_OPT_OUT
+        value: "true"
+
+# No phone-home: Ory's SQA telemetry dials sqa.ory.sh on 443, which the
+# default-deny egress correctly drops — pure PolicyDropsDetected noise. Every
+# Ory binary phones home independently, so EACH deployment needs the opt-out
+# (kratos-only was not enough — oathkeeper kept tripping PolicyDropsDetected).
+# This is deployment wiring, not auth config, so it lives here and not in
+# infra/auth/.
+kratos:
+  deployment:
+    extraEnv:
+      - name: SQA_OPT_OUT
+        value: "true"
 
 # Hydra is a public-API add-on (ADR-0009). Off by default — internal-only
 # projects run Kratos + Oathkeeper + OpenFGA. The `hydra_thirdparty` flag flips

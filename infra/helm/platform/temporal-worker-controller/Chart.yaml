@@ -1,0 +1,19 @@
+apiVersion: v2
+name: temporal-worker-controller
+description: |
+  Rainbow deploys for Temporal workers (ADR-0006). Reconciles one Kubernetes
+  Deployment per Worker Deployment Version so a version's pods outlive the
+  rollout that replaced it, which is what makes Pinned versioning a real
+  guarantee rather than a best-effort one.
+type: application
+version: 0.1.0
+appVersion: "1.8.0"
+
+dependencies:
+  # The CRDs are NOT here — they are their own base-tier chart
+  # (infra/helm/platform/temporal-worker-controller-crds), because this chart
+  # renders a `Connection` custom resource and Helm cannot validate a CR against
+  # a CRD being installed in the same release. See that chart's description.
+  - name: temporal-worker-controller
+    version: "0.27.0"
+    repository: oci://docker.io/temporalio

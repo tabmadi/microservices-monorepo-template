@@ -4,13 +4,12 @@
 # scalable, object-storage-backed variant is the Mimir Scale swap (see values.yaml
 # and docs/operational-surface.md), not this floor.
 {{- $p := .Values.prometheus }}
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: prometheus
-  labels: { app.kubernetes.io/name: prometheus, app.kubernetes.io/part-of: observability }
-data:
-  prometheus.yml: |
+{{/* The config lives in a define so the Deployment below can stamp its sha256
+     as a pod-template annotation: without that checksum a config edit updates
+     the ConfigMap but never rolls the pod, and Prometheus keeps running the
+     old config indefinitely (how the rule_files stanza sat unloaded until
+     2026-07-23 — /api/v1/rules returned [] while the mounted files were valid). */}}
+{{- define "observability.prometheus.config" }}
     global:
       scrape_interval: 30s
     # OTLP metrics arrive from the OTel collector (--web.enable-otlp-receiver).
@@ -28,7 +27,34 @@ data:
       # namespace so dashboards can group by service — this is the label the RED, log,
       # trace AND kubeletstats CPU/memory series (ADR-0025 POC) all share, since
       # k8sattributes derives service.name from each pod's app.kubernetes.io/name.
-      promote_resource_attributes: ["service.name", "service.namespace"]
+      # k8s.deployment.name / k8s.statefulset.name: otel-cluster folds role
+      # deployments into one service identity (orders-server + orders-worker →
+      # orders); these labels keep the folded series distinct (else the two
+      # deployments' desired/available would collide on an identical labelset)
+      # and give the workload-health alerts a per-deployment subject to name.
+      # k8s.volume.* : the kubeletstats `volume` metric group reports free space per
+      # volume, and the identifying attributes are resource-level — unpromoted,
+      # every volume in the cluster collapses onto one labelset (measured: 12
+      # identical series) and nothing can name which disk is filling up.
+      #
+      # k8s.persistentvolumeclaim.name and k8s.volume.type are listed but do NOT
+      # resolve on the local tier: local-path PVs are directories on the node disk,
+      # so kubelet reports every volume — configMap, secret, emptyDir and PVC alike
+      # — with the NODE filesystem's numbers and without a claim reference.
+      # Locally that makes per-volume free space a duplicate of node disk, which is
+      # why the disk alerts key off k8s_node_filesystem_* instead. On a real CSI
+      # storage class these attributes appear and the per-volume panel becomes the
+      # per-claim signal it looks like.
+      promote_resource_attributes:
+        [
+          "service.name",
+          "service.namespace",
+          "k8s.deployment.name",
+          "k8s.statefulset.name",
+          "k8s.persistentvolumeclaim.name",
+          "k8s.volume.name",
+          "k8s.volume.type",
+        ]
     # OTLP pushes can land slightly out of order across collector batches.
     storage:
       tsdb:
@@ -43,6 +69,15 @@ data:
     # query); routing/paging is a per-project add-on.
     rule_files:
       - /etc/prometheus/rules/*.yaml
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus
+  labels: { app.kubernetes.io/name: prometheus, app.kubernetes.io/part-of: observability }
+data:
+  prometheus.yml: |
+    {{- include "observability.prometheus.config" . }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -56,6 +91,12 @@ spec:
   template:
     metadata:
       labels: { app.kubernetes.io/name: prometheus }
+      # Roll the pod whenever the config changes — Prometheus only reads its
+      # config at startup (no reloader sidecar in the Core stack). NOTE: this
+      # covers the `prometheus` ConfigMap only; edits to the separately-synced
+      # `prometheus-alerts` ConfigMap still need a restart (see volume below).
+      annotations:
+        checksum/config: {{ include "observability.prometheus.config" . | sha256sum }}
     spec:
       containers:
         - name: prometheus

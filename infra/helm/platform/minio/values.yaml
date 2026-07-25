@@ -14,6 +14,13 @@ minio:
     requests: { memory: "256Mi" }
   rootUser: minio
   rootPassword: minio-password
+  # No phone-home: the MinIO server checks dl.min.io for a newer release on
+  # startup, which default-deny egress drops (observed by putting an L7 DNS
+  # visibility policy on the cluster and reading the query off the wire). The
+  # binary is pinned by the chart's appVersion and upgraded deliberately, so the
+  # check has nothing to tell us even when it succeeds.
+  environment:
+    MINIO_UPDATE: "off"
   # One bucket per backend consumer (platform/observability charts), matching
   # the names each chart's own values.yaml expects.
   buckets:

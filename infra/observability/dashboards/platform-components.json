@@ -1,0 +1,238 @@
+{
+  "title": "Platform components",
+  "uid": "platform-components",
+  "schemaVersion": 39,
+  "tags": ["platform", "components"],
+  "description": "Component-native metrics for the platform tier (ADR-0025): postgres via the CNPG instance manager's built-in exporter (:9187, includes the pgbouncer poolers) and the Temporal server roles (:9090) — scraped by the otel-cluster collector and re-exported over OTLP, so Prometheus itself still scrapes nothing (ADR-0011). These are the components' REAL golden signals (transactions, task latencies) — they are not HTTP servers, so forcing them into the service-detail SLO/RED panels would be fake. Universal health for the same workloads (pods/restarts/logs/resources) lives on service-detail.",
+  "links": [
+    {
+      "title": "◀ Back to Applications",
+      "type": "link",
+      "url": "/d/applications/applications?${__url_time_range}",
+      "icon": "external link"
+    }
+  ],
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "row",
+      "title": "PostgreSQL (CNPG exporter)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Transactions/s by database",
+      "description": "Commits + rollbacks per second per database — postgres's request rate.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (datname) (rate(cnpg_pg_stat_database_xact_commit_total{service_name=\"postgres\"}[5m]) + rate(cnpg_pg_stat_database_xact_rollback_total{service_name=\"postgres\"}[5m]))",
+          "legendFormat": "{{datname}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Backends by database",
+      "description": "Open server connections per database. The poolers keep this low and steady (ADR-0007, transaction mode); a climb here means something is bypassing pgbouncer or leaking connections.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (datname) (cnpg_backends_total{service_name=\"postgres\"})",
+          "legendFormat": "{{datname}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache hit ratio / deadlocks",
+      "description": "Shared-buffers hit ratio (left, should sit near 100%) and deadlocks per second (right, should sit at zero).",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "max": 1 },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "deadlocks/s" },
+            "properties": [
+              { "id": "unit", "value": "ops" },
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "max", "value": null }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(cnpg_pg_stat_database_blks_hit_total{service_name=\"postgres\"}[5m])) / (sum(rate(cnpg_pg_stat_database_blks_hit_total{service_name=\"postgres\"}[5m])) + sum(rate(cnpg_pg_stat_database_blks_read_total{service_name=\"postgres\"}[5m])))",
+          "legendFormat": "cache hit ratio"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(cnpg_pg_stat_database_deadlocks_total{service_name=\"postgres\"}[5m]))",
+          "legendFormat": "deadlocks/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL write rate",
+      "description": "Bytes of WAL generated per second — the write-load signal, and (with backups enabled) what ships to the object store.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "Bps" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(cnpg_collector_wal_bytes{service_name=\"postgres\"}[5m]))",
+          "legendFormat": "WAL bytes/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Database size",
+      "description": "On-disk size per database.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (datname) (cnpg_pg_database_size_bytes{service_name=\"postgres\"})",
+          "legendFormat": "{{datname}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Longest transaction",
+      "description": "Max open-transaction duration across backends. Long-running transactions block vacuum and bloat the poolers (transaction mode holds a server connection for the whole transaction).",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(cnpg_backends_max_tx_duration_seconds{service_name=\"postgres\"})",
+          "legendFormat": "max tx duration"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Temporal (server metrics)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "gRPC request rate by role",
+      "description": "service_requests_total per second, split by server role (the per-role identity survives in the `type` label; the exporter's own service_name label is dropped by otel-cluster to keep the workload identity whole).",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (type) (rate(service_requests_total{service_name=\"temporal\"}[5m]))",
+          "legendFormat": "{{type}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Frontend latency p50 / p95 / p99",
+      "description": "Client-facing gRPC latency at the frontend role — Temporal's own \"D\" of RED. Long-poll operations are excluded: they block ~60s by design and would swamp the percentiles.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(service_latency_bucket{service_name=\"temporal\",type=\"frontend\",operation!~\"PollWorkflowTaskQueue|PollActivityTaskQueue|PollNexusTaskQueue|GetWorkflowExecutionHistory\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(service_latency_bucket{service_name=\"temporal\",type=\"frontend\",operation!~\"PollWorkflowTaskQueue|PollActivityTaskQueue|PollNexusTaskQueue|GetWorkflowExecutionHistory\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(service_latency_bucket{service_name=\"temporal\",type=\"frontend\",operation!~\"PollWorkflowTaskQueue|PollActivityTaskQueue|PollNexusTaskQueue|GetWorkflowExecutionHistory\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Persistence requests / errors",
+      "description": "Temporal's calls into its postgres store. Error rate here (right axis) is the first place database trouble surfaces.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 18 },
+      "fieldConfig": {
+        "defaults": { "unit": "ops" },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "errors/s" },
+            "properties": [
+              { "id": "custom.axisPlacement", "value": "right" },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(persistence_requests_total{service_name=\"temporal\"}[5m]))",
+          "legendFormat": "requests/s"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(persistence_errors_total{service_name=\"temporal\"}[5m])) or vector(0)",
+          "legendFormat": "errors/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Workflow completions/s",
+      "description": "Successfully completed workflow executions per second.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(workflow_success_total{service_name=\"temporal\"}[5m])) or vector(0)",
+          "legendFormat": "workflow success/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Task schedule-to-start p95",
+      "description": "How long tasks sit in matching queues before a worker picks them up — the backlog/worker-starvation signal. Rising p95 with flat request rate means workers are under-provisioned.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(task_schedule_to_start_latency_bucket{service_name=\"temporal\"}[5m])))",
+          "legendFormat": "p95 schedule→start"
+        }
+      ]
+    }
+  ]
+}

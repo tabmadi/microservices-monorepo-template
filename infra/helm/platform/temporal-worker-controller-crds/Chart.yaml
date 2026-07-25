@@ -1,0 +1,23 @@
+apiVersion: v2
+name: temporal-worker-controller-crds
+description: |
+  CRDs for the Temporal Worker Controller (ADR-0006): WorkerDeployment,
+  Connection, WorkerResourceTemplate.
+
+  Split from the controller chart on purpose, which is also how upstream ships
+  them. A CustomResourceDefinition and a custom resource OF that definition
+  cannot live in one Helm release: Helm validates every manifest against the API
+  server before applying any of them, so the `Connection` CR fails with "no
+  matches for kind Connection" on a first install. Separating them puts the CRDs
+  in the base tier (wave 0) and the controller plus its Connection in core
+  (wave 3), which makes the ordering explicit rather than implicit in ArgoCD's
+  apply-CRDs-first behaviour — and keeps `mise run platform:deploy` working,
+  since that path is plain `helm upgrade --install` with no such special-casing.
+type: application
+version: 0.1.0
+appVersion: "1.8.0"
+
+dependencies:
+  - name: temporal-worker-controller-crds
+    version: "0.27.0"
+    repository: oci://docker.io/temporalio

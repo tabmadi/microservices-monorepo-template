@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/interceptor"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/tabmadi/microservices-monorepo-template/libs/go/observability"
 )
@@ -109,14 +110,71 @@ func retry(fn func() error) error {
 	}
 }
 
+// stopTimeout resolves how long a worker waits for in-flight Activities to finish
+// after SIGTERM, from $TEMPORAL_WORKER_STOP_TIMEOUT (a Go duration).
+//
+// The SDK default is 0s — meaning the worker does NOT wait, and every Activity
+// still executing when a pod is rolled is abandoned until its
+// StartToCloseTimeout expires and it is retried elsewhere. On a rolling deploy
+// that is a burst of avoidable retries and, for a non-idempotent-looking
+// Activity, a burst of duplicate work. The Helm chart sets this and derives the
+// pod's terminationGracePeriodSeconds from it, so kubelet always waits strictly
+// longer than the worker does (infra/helm/service/values.yaml).
+func stopTimeout() time.Duration {
+	v := os.Getenv("TEMPORAL_WORKER_STOP_TIMEOUT")
+	if v == "" {
+		return 25 * time.Second
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		slog.Warn("bad TEMPORAL_WORKER_STOP_TIMEOUT, using default", "value", v, "error", err)
+		return 25 * time.Second
+	}
+	return d
+}
+
+// deploymentOptions builds the Worker Deployment Versioning config (ADR-0006)
+// from the environment the chart injects. Versioning is ON whenever BOTH
+// $TEMPORAL_DEPLOYMENT_NAME and $TEMPORAL_WORKER_BUILD_ID are set; with either
+// missing the worker polls unversioned, which is what local `go run` and the
+// tests want.
+//
+// DefaultVersioningBehavior is Pinned: an execution runs start-to-finish on the
+// Deployment Version that began it, so a deploy cannot break a Workflow that is
+// already in flight and no workflow.GetVersion patching is required. Workflows
+// that must instead follow the newest code opt out individually by returning
+// AutoUpgrade — and those, per ADR-0006, owe a versioning plan and replay tests.
+func deploymentOptions() worker.DeploymentOptions {
+	name, buildID := os.Getenv("TEMPORAL_DEPLOYMENT_NAME"), os.Getenv("TEMPORAL_WORKER_BUILD_ID")
+	if name == "" || buildID == "" {
+		return worker.DeploymentOptions{}
+	}
+	return worker.DeploymentOptions{
+		UseVersioning: true,
+		Version: worker.WorkerDeploymentVersion{
+			DeploymentName: name,
+			BuildID:        buildID,
+		},
+		DefaultVersioningBehavior: workflow.VersioningBehaviorPinned,
+	}
+}
+
 // NewWorker constructs a Temporal worker with the platform-default options.
+//
+// EnableSessionWorker is deliberately NOT set. It was on here historically while
+// nothing in the repo ever opened a session (no CreateSession / workflow.Session
+// call exists), and the SDK forbids combining it with Worker Deployment
+// Versioning — "Cannot be enabled at the same time as
+// WorkerOptions.EnableSessionWorker". A service that genuinely needs sessions
+// therefore has to opt out of versioning explicitly rather than inherit both.
 func NewWorker(c client.Client, taskQueue string) worker.Worker {
 	return worker.New(
 		c,
 		taskQueue,
 		worker.Options{
-			EnableSessionWorker:                true,
 			MaxConcurrentActivityExecutionSize: 50,
+			WorkerStopTimeout:                  stopTimeout(),
+			DeploymentOptions:                  deploymentOptions(),
 		},
 	)
 }

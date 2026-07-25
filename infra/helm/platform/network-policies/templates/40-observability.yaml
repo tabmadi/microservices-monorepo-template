@@ -1,5 +1,8 @@
 ## OTel collector (DaemonSet) — the single telemetry ingest point. Every app pod
-## pushes OTLP (4317 gRPC / 4318 HTTP); nothing else should.
+## pushes OTLP (4317 gRPC / 4318 HTTP); nothing else should. The edge (Traefik in
+## kube-system) additionally forwards browser Faro telemetry to 8027
+## (infra/gateway/frontend-observability.yaml) — without that rule the frontend
+## RUM path is POLICY_DENIED at the collector.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -15,6 +18,10 @@ spec:
         - ports:
             - { port: "4317", protocol: TCP }
             - { port: "4318", protocol: TCP }
+    - fromEndpoints:
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: kube-system }
+      toPorts:
+        - ports: [{ port: "8027", protocol: TCP }]
 ---
 ## Loki — writes come from the OTel collector, reads from Grafana.
 apiVersion: cilium.io/v2
@@ -32,7 +39,10 @@ spec:
       toPorts:
         - ports: [{ port: "3100", protocol: TCP }]
 ---
-## Prometheus — OTLP metrics push from OTel, queries from Grafana (all 9090).
+## Prometheus — OTLP metrics push from BOTH collectors (the DaemonSet agent and
+## the otel-cluster singleton), queries from Grafana (all 9090). otel-cluster
+## missing here is exactly what the ClusterStateMetricsAbsent alert fires on —
+## its push was netpol-dropped from 2026-07-23's first deploy until this rule.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -44,6 +54,7 @@ spec:
   ingress:
     - fromEndpoints:
         - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: opentelemetry-collector }
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: otel-cluster }
         - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: grafana }
       toPorts:
         - ports: [{ port: "9090", protocol: TCP }]
@@ -111,6 +122,33 @@ spec:
         - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: grafana }
       toPorts:
         - ports: [{ port: "4040", protocol: TCP }]
+---
+## Alloy — the pprof scraper (ADR-0025). Its egress to live pods is already
+## covered by the baseline's intra-namespace rule; this adds the same reachability
+## by CIDR so a target that was deleted between two service-discovery refreshes
+## does not read as `world` and get denied.
+##
+## Same root cause as the temporal stale-member allow (20-temporal.yaml), but a
+## much shorter window: Alloy re-resolves its targets within a minute or two, so
+## these drops never sustain the 10m PolicyDropsDetected needs. They do, however,
+## land on the overview dashboard's drop tile — which is scoped to POLICY_DENIED
+## and reddens above 0.01/s — after every rollout, and a tile that flickers red
+## during routine deploys is a tile people learn to ignore.
+##
+## Scoped to the admin port only: that is the pprof/metrics endpoint services
+## expose (values.yaml server.adminPort), and it is the only port Alloy scrapes.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: alloy
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: alloy
+  egress:
+    - toCIDR: [{{ .Values.podCIDR | quote }}]
+      toPorts:
+        - ports: [{ port: "9090", protocol: TCP }]
 ---
 ## Grafana — the ops UI, reached only through the edge gateway (3000).
 apiVersion: cilium.io/v2

@@ -33,6 +33,7 @@ writing an ADR that shows the floor already covers its concern.
 | Kyverno | Admission policy (image signatures, digest pins) | [0021](adr/0021-supply-chain-security.md) |
 | OpenFGA | Authorization (ReBAC) | [0010](adr/0010-auth.md) |
 | Temporal | Durable execution | [0006](adr/0006-temporal.md) |
+| Temporal Worker Controller | Versioned (rainbow) worker deploys — one Deployment per Build ID, retained until drained | [0006](adr/0006-temporal.md) |
 | Loki | Log storage | [0011](adr/0011-observability.md) |
 | Tempo | Trace storage | [0011](adr/0011-observability.md) |
 | Prometheus | Metrics storage | [0011](adr/0011-observability.md) |

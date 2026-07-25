@@ -150,8 +150,8 @@ test.describe("service observability POC (ADR-0025)", () => {
     const res = await ctx.get(`${opsURL("grafana")}/api/search?type=dash-db`);
     expect(res.ok(), "Grafana search API answers").toBeTruthy();
     const uids = ((await res.json()) as { uid: string }[]).map((d) => d.uid);
-    expect(uids, "detail + applications dashboards are provisioned").toEqual(
-      expect.arrayContaining(["service-detail", "applications"]),
+    expect(uids, "overview + detail + applications + components dashboards are provisioned").toEqual(
+      expect.arrayContaining(["overview", "service-detail", "applications", "platform-components"]),
     );
   });
 
@@ -173,6 +173,20 @@ test.describe("service observability POC (ADR-0025)", () => {
     expect(await promHasSeries('http_server_request_duration_seconds_bucket{le="0.5"}')).toBeTruthy();
   });
 
+  // otel-cluster's two jobs. k8s_cluster: the desired/available/restart series
+  // the workload-health alerts and the service-detail Health row read — its OTLP
+  // push is netpol-gated (prometheus CNP must allow otel-cluster; it silently
+  // didn't until 2026-07-23, which is what ClusterStateMetricsAbsent fires on).
+  // Exporter scrapes: postgres (CNPG :9187) and Temporal (:9090) land under the
+  // canonical service_name identity — each guards its scrape config, the
+  // metrics-port ingress rule on the target, and (for temporal) the delete_key
+  // that stops the exporter's own service_name label fragmenting the identity.
+  test("otel-cluster series exist: cluster state + component exporters", async () => {
+    expect(await promHasSeries('k8s_deployment_desired{service_namespace="platform"}')).toBeTruthy();
+    expect(await promHasSeries('cnpg_backends_total{service_name="postgres"}')).toBeTruthy();
+    expect(await promHasSeries('service_requests_total{service_name="temporal"}')).toBeTruthy();
+  });
+
   // Alerts-as-code (ADR-0011): the rule files under infra/observability/alerts/
   // must actually be LOADED by Prometheus, not just committed. This catches every
   // link in the chain — the prometheus-alerts kustomize ConfigMap, its Argo app,
@@ -186,7 +200,37 @@ test.describe("service observability POC (ADR-0025)", () => {
     const groups: { rules: { name: string }[] }[] = (await res.json()).data?.groups ?? [];
     const names = groups.flatMap((g) => g.rules.map((r) => r.name));
     expect(names, "committed alert rules are evaluating").toEqual(
-      expect.arrayContaining(["ServiceHigh5xx", "PolicyDropsDetected"]),
+      expect.arrayContaining([
+        "ServiceHigh5xx",
+        "PolicyDropsDetected",
+        "DeploymentReplicasUnavailable",
+        "ContainerRestartsSpiking",
+      ]),
+    );
+  });
+
+  // Log coverage for PLATFORM workloads (ADR-0011's filelog path). Repo services
+  // push logs over OTLP from the SDK, but postgres/temporal/lowdefy/… only write
+  // stdout — those reach Loki solely through the collector's logsCollection
+  // (filelog) preset. Until 2026-07-23 that receiver was missing and every
+  // platform service showed a permanently empty Logs panel on service-detail.
+  // Asserting distinct service_name values (24h window — these workloads can be
+  // quiet at idle) pins the whole chain: hostPath mount, filelog receiver,
+  // container parser, and the k8sattributes service.name inference the dashboard
+  // filters on. grafana/loki/tempo appear as "observability": service.name
+  // inference prefers app.kubernetes.io/instance (the Helm release) over /name.
+  test("platform workloads that only log to stdout reach Loki (filelog)", async () => {
+    const ds = await ctx.get(`${opsURL("grafana")}/api/datasources/name/Loki`);
+    expect(ds.ok(), "Loki datasource is provisioned").toBeTruthy();
+    const { uid } = await ds.json();
+    const start = `${(Date.now() - 24 * 3600 * 1000) * 1e6}`;
+    const res = await ctx.get(
+      `${opsURL("grafana")}/api/datasources/proxy/uid/${uid}/loki/api/v1/label/service_name/values?start=${start}`,
+    );
+    expect(res.ok(), "Loki label API answers via the Grafana proxy").toBeTruthy();
+    const services: string[] = (await res.json()).data ?? [];
+    expect(services, "stdout-only platform workloads have logs in Loki").toEqual(
+      expect.arrayContaining(["postgres", "temporal", "lowdefy", "observability", "otel-collector"]),
     );
   });
 });

@@ -1,0 +1,40 @@
+# Workload-health alerts (ADR-0025 follow-up). Fed by the otel-cluster singleton
+# (observability chart, templates/otel-cluster.yaml) — the k8s_cluster receiver's
+# view of desired vs observed state. This is the alerting seam of the
+# "Grafana answers 'is something wrong?', Headlamp answers 'what exactly'"
+# split: these rules page/ticket, the drill-down happens in Headlamp.
+groups:
+  - name: workload.health
+    rules:
+      # Fewer pods available than the Deployment wants, sustained. Catches what
+      # the kubelet-derived dashboards structurally cannot: pods that SHOULD
+      # exist but don't (Pending on quota/scheduling, CrashLoop past readiness).
+      - alert: DeploymentReplicasUnavailable
+        expr: |
+          k8s_deployment_available < k8s_deployment_desired
+        for: 10m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.service_name }}: only {{ $value }} of desired replicas available for 10m — check the pods in Headlamp"
+
+      # Container restarting repeatedly — the CrashLoopBackOff signal. The
+      # restart count is a monotonic gauge, so delta() (not increase()) reads
+      # the growth over the window.
+      - alert: ContainerRestartsSpiking
+        expr: |
+          delta(k8s_container_restarts[30m]) > 3
+        for: 0m
+        labels: { severity: ticket }
+        annotations:
+          summary: "{{ $labels.service_name }} restarted {{ $value }} times in 30m — likely crash-looping"
+
+      # The otel-cluster singleton is a 1-replica watcher: if it is down, the
+      # two rules above go silent while everything LOOKS healthy. Guard the
+      # guard — absent() fires when the desired-replicas series disappears.
+      - alert: ClusterStateMetricsAbsent
+        expr: |
+          absent(k8s_deployment_desired)
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: "k8s_deployment_desired has no series for 15m — the otel-cluster collector is likely down; workload-health alerts are blind"

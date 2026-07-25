@@ -6,9 +6,9 @@
 #                    any SopsSecret CR can be decrypted into Secrets (ADR-0005).
 #   data (wave 2)  — postgres, minio. The storage layer everything else sits on;
 #                    needs the Secrets produced by the base + secrets tiers.
-#   core (wave 3)  — observability, ory, temporal, openfga, pgweb, headlamp,
-#                    lowdefy. Consumers of the data layer (Postgres DSNs, the
-#                    MinIO trace/log buckets).
+#   core (wave 3)  — observability, ory, temporal, temporal-worker-controller,
+#                    openfga, pgweb, headlamp, lowdefy. Consumers of the data
+#                    layer (Postgres DSNs, the MinIO trace/log buckets).
 #
 # WHY THREE SETS AND NOT PER-CHART SYNC-WAVES: sync-waves on the Applications a
 # single ApplicationSet generates are INERT — those Applications are created by
@@ -56,6 +56,7 @@ spec:
                 - { path: "infra/helm/platform/sops-operator" }
                 - { path: "infra/helm/platform/cert-manager" }
                 - { path: "infra/helm/platform/network-policies" }
+                - { path: "infra/helm/platform/temporal-worker-controller-crds" }
                 # Prod manages the CNI + ArgoCD itself through GitOps (the local
                 # tier excludes these — cluster:full installs them imperatively
                 # because a CNI must exist before any pod, and Argo cannot install
@@ -197,6 +198,7 @@ spec:
                 - { path: "infra/helm/platform/observability" }
                 - { path: "infra/helm/platform/ory" }
                 - { path: "infra/helm/platform/temporal" }
+                - { path: "infra/helm/platform/temporal-worker-controller" }
                 - { path: "infra/helm/platform/openfga" }
                 - { path: "infra/helm/platform/pgweb" }
                 - { path: "infra/helm/platform/headlamp" }

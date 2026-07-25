@@ -20,7 +20,17 @@ opentelemetry-collector:
   # tag is pinned to the chart's appVersion (0.154.0) to keep config schema + binary
   # aligned — see the chart dependency version in Chart.yaml.
   image: { repository: otel/opentelemetry-collector-contrib, tag: "0.154.0" }
-  presets: { kubernetesAttributes: { enabled: true } }
+  # logsCollection is the ADR-0011 filelog path: the agent tails /var/log/pods
+  # via the chart's filelog receiver (container parser, collector's own logs
+  # excluded) so PLATFORM workloads that only write stdout — postgres, temporal,
+  # grafana, lowdefy, … — land in Loki too. Repo services push logs over OTLP
+  # from the SDK (libs/go/observability) and write no stdout in-cluster, so the
+  # two paths never double-ingest. k8sattributes stamps service.name from
+  # app.kubernetes.io/name, so these logs match {service_name="…"} on the
+  # service-detail dashboard like everything else.
+  presets:
+    kubernetesAttributes: { enabled: true }
+    logsCollection: { enabled: true }
   # RBAC for the kubeletstats receiver (added to the metrics pipeline below): the
   # kubelet's /stats/summary endpoint authorizes against the nodes/stats subresource.
   # The kubernetesAttributes preset creates the ClusterRole (pods/namespaces/nodes);
@@ -29,6 +39,12 @@ opentelemetry-collector:
     rules:
       - apiGroups: [""]
         resources: ["nodes/stats", "nodes/proxy"]
+        verbs: ["get", "list", "watch"]
+      # PVC/PV reads for the kubeletstats `volume` metric group's k8s_api_config,
+      # which turns per-volume series keyed by the in-pod name ("data", shared by
+      # every StatefulSet) into series keyed by the actual claim.
+      - apiGroups: [""]
+        resources: ["persistentvolumeclaims", "persistentvolumes"]
         verbs: ["get", "list", "watch"]
   # Browser beacons reach the collector through a ClusterIP Service (Traefik →
   # otel-collector:8027). Services still emit to localhost:4317, not this Service.
@@ -75,7 +91,26 @@ opentelemetry-collector:
         auth_type: serviceAccount
         endpoint: "https://${env:K8S_NODE_IP}:10250"
         insecure_skip_verify: true
-        metric_groups: [pod, container, node]
+        # `volume` is the one that protects the data tier. Postgres, Loki, Tempo,
+        # Prometheus and MinIO all write to PVCs, and a full PVC does not evict a
+        # pod or fail a probe — Postgres simply starts refusing writes. Nothing
+        # else in this stack reports PVC free space: kubelet knows it, and this is
+        # the only receiver that asks.
+        metric_groups: [pod, container, node, volume]
+        # Resolve volumes to their PersistentVolumeClaim / PV names. Without this
+        # the volume series are keyed by the in-pod volume name ("data"), which is
+        # the same string on every StatefulSet and therefore useless for alerting
+        # on a specific claim. Needs the PVC/PV read grants in clusterRole.rules.
+        k8s_api_config:
+          auth_type: serviceAccount
+        # Usage-vs-limit ratios (off by default). Computed from the pod spec the
+        # receiver reads via the kubelet's /pods endpoint (nodes/proxy, granted
+        # above). Pod-level limit_utilization is only emitted when EVERY
+        # container in the pod declares that limit — pods without limits simply
+        # show a blank cell on the Applications dashboard, not a zero.
+        metrics:
+          k8s.pod.memory_limit_utilization: { enabled: true }
+          k8s.pod.cpu_limit_utilization: { enabled: true }
     processors:
       memory_limiter:
         check_interval: 1s
@@ -123,12 +158,13 @@ grafana:
       org_role: Admin
     # Skip the "Welcome to Grafana" home page and land operators on a real
     # dashboard. dashboardsConfigMaps.default (grafana-dashboards) mounts at
-    # /var/lib/grafana/dashboards/default, so applications.json is served there.
-    # Applications is the single-pane landing page: every workload in one table
-    # (CPU/mem/net always present via kubeletstats, RED filling in under traffic),
-    # each row linking to its service-detail drill-down.
+    # /var/lib/grafana/dashboards/default, so overview.json is served there.
+    # Overview is the L1 landing page (ADR-0026): firing alerts, cluster-wide
+    # golden signals, per-service SLO status, and platform-dependency one-liners —
+    # every panel either turns red or links down to Applications / Service detail /
+    # Platform components / policy-denials.
     dashboards:
-      default_home_dashboard_path: /var/lib/grafana/dashboards/default/applications.json
+      default_home_dashboard_path: /var/lib/grafana/dashboards/default/overview.json
     # No phone-home: version/plugin update checks and usage analytics are the only
     # reason Grafana reaches the internet (seen in Hubble as grafana -> <gcp-ip>:443).
     analytics:
@@ -306,3 +342,13 @@ alloy:
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits:   { cpu: "500m", memory: "512Mi" }
+
+# Cluster-state metrics singleton (templates/otel-cluster.yaml): k8s_cluster
+# receiver → desired/available replicas, restart counts, resource limits as
+# series. Image matches the DaemonSet collector's contrib distro + tag so both
+# collectors upgrade in lockstep.
+otelCluster:
+  image: otel/opentelemetry-collector-contrib:0.154.0
+  resources:
+    requests: { cpu: "50m",  memory: "128Mi" }
+    limits:   { cpu: "200m", memory: "256Mi" }

@@ -1,4 +1,50 @@
 {{- if .Values.worker.enabled }}
+{{- /*
+Two shapes, one pod spec. With versioning on (the default) the worker is a
+`WorkerDeployment` and the Temporal Worker Controller owns the Deployments —
+one per Build ID — so a version's pods survive the rollout that replaced it and
+Pinned Workflows always have a worker to run on. With versioning off (a service
+that needs Temporal sessions, which the SDK refuses to combine with versioning)
+it is an ordinary Deployment and the operator is not involved.
+
+The pod template below is shared verbatim, so the two modes cannot drift.
+*/ -}}
+{{- if .Values.worker.versioning.enabled }}
+apiVersion: temporal.io/v1alpha1
+kind: WorkerDeployment
+metadata:
+  name: {{ include "service.fullname" . }}-worker
+  labels: {{- include "service.labels" . | nindent 4 }}
+    component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  # Stated explicitly even though these ARE the CRD's schema defaults. ArgoCD
+  # diffs the rendered manifest against the live object and has no normalizer for
+  # custom resources the way it does for built-in kinds, so any field the API
+  # server defaults in — but the manifest omits — reads as permanent drift. The
+  # Application then sits OutOfSync forever, which matters here beyond tidiness:
+  # the platform's sync-wave gate only advances on Synced+Healthy
+  # (infra/gitops/*/appset-platform.yaml), and a tier that never reports Synced
+  # is a tier whose real drift nobody notices.
+  minReadySeconds: 0
+  progressDeadlineSeconds: 600
+  workerOptions:
+    connectionRef:
+      name: {{ .Values.temporal.connectionRef | quote }}
+    temporalNamespace: {{ .Values.temporal.namespace | quote }}
+  # How new versions take traffic. AllAtOnce promotes the new version to Current
+  # as soon as its pods are ready — the right default here because the platform's
+  # Workflows are short (ADR-0006 wall-clock rule), so a bad version is caught in
+  # minutes and rolled back by promoting the previous Build ID, and a Progressive
+  # ramp mostly adds latency to every deploy. Services with long or high-value
+  # Workflows should override to Progressive with steps + a gate workflow.
+  rollout: {{- toYaml .Values.worker.versioning.rollout | nindent 4 }}
+  # How drained versions go away. The delays are deliberately generous: scaling a
+  # version down is only safe once Temporal reports it Drained, and deleting it
+  # early is what re-creates the very gap this controller exists to close.
+  sunset: {{- toYaml .Values.worker.versioning.sunset | nindent 4 }}
+  template:
+{{- else }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -11,21 +57,39 @@ spec:
     matchLabels: {{- include "service.selector" . | nindent 6 }}
       component: worker
   template:
+{{- end }}
     metadata:
       labels: {{- include "service.selector" . | nindent 8 }}
         component: worker
     spec:
       serviceAccountName: {{ include "service.fullname" . }}
       securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Strictly longer than the worker's own stop timeout, so kubelet never
+      # SIGKILLs a worker that is still draining Activities (values.yaml).
+      terminationGracePeriodSeconds: {{ add .Values.worker.stopTimeoutSeconds .Values.worker.terminationGraceBufferSeconds }}
       containers:
         - name: worker
           image: {{ include "service.worker.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext: {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
-            - { name: admin, containerPort: {{ .Values.server.adminPort }} }
+            # `protocol` is likewise defaulted by the API server; spelling it out
+            # keeps the WorkerDeployment manifest byte-comparable with the live
+            # object (see minReadySeconds above). Harmless on the plain
+            # Deployment, which Argo does normalize.
+            - { name: admin, containerPort: {{ .Values.server.adminPort }}, protocol: TCP }
           env:
             {{- include "service.otelEnv" . | nindent 12 }}
+            - { name: TEMPORAL_WORKER_STOP_TIMEOUT, value: "{{ .Values.worker.stopTimeoutSeconds }}s" }
+            {{- /*
+            No TEMPORAL_DEPLOYMENT_NAME / TEMPORAL_WORKER_BUILD_ID here, on
+            purpose. In versioned mode the controller injects both (its Build ID
+            is the image tag plus a hash of this pod template, so a config-only
+            change is also a new version — strictly better than anything the
+            chart could compute), and upstream is explicit that they must not be
+            set by hand. In unversioned mode their absence is what makes
+            libs/go/temporalmw poll unversioned.
+            */ -}}
             {{- range $k, $v := .Values.env }}
             - { name: {{ $k }}, value: {{ $v | quote }} }
             {{- end }}

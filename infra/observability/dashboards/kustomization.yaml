@@ -22,6 +22,8 @@ generatorOptions:
 configMapGenerator:
   - name: grafana-dashboards
     files:
+      - overview.json
       - hubble-drops.json
       - applications.json
       - service-detail.json
+      - platform-components.json

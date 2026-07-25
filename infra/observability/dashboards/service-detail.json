@@ -3,10 +3,10 @@
   "uid": "service-detail",
   "schemaVersion": 39,
   "tags": ["service", "detail", "poc"],
-  "description": "POC (see docs): the 'click a service, see everything' unified page. One templated dashboard scoped by $service, mixing Prometheus + Loki + Tempo + Pyroscope on one screen: SLO (availability + latency + error budget), RED, CPU/Memory (kubeletstats), Logs, Traces, and a CPU flame graph (Alloy → Pyroscope). All six signal groups are wired on the full-tier stack.",
+  "description": "POC (see docs): the 'click a service, see everything' unified page. One templated dashboard scoped by $service, mixing Prometheus + Loki + Tempo + Pyroscope on one screen: SLO (availability + latency + error budget), RED, CPU/Memory (kubeletstats), Logs, Traces, and a CPU flame graph (Alloy \u2192 Pyroscope). All six signal groups are wired on the full-tier stack.",
   "links": [
     {
-      "title": "◀ Back to Applications",
+      "title": "\u25c0 Back to Applications",
       "type": "link",
       "url": "/d/applications/applications?${__url_time_range}",
       "icon": "external link"
@@ -18,7 +18,7 @@
         "name": "service",
         "type": "query",
         "datasource": "Prometheus",
-        "query": "label_values(http_server_request_duration_seconds_count, service_name)"
+        "query": "label_values(k8s_pod_cpu_usage{service_namespace=\"platform\"}, service_name)"
       }
     ]
   },
@@ -26,14 +26,24 @@
     {
       "type": "row",
       "title": "SLO (over the selected time range)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
     },
     {
       "type": "stat",
       "title": "Availability",
-      "description": "Share of non-5xx requests over the dashboard time range. Target 99.9%.",
+      "description": "Share of non-5xx requests over the time range for HTTP-instrumented services. Platform components have no HTTP telemetry, so the same tile falls back to serving availability: average ready/desired (Deployments/StatefulSets), then average fraction of pods Running (bare pods, e.g. CNPG). Target 99.9%.",
       "datasource": "Prometheus",
-      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 1 },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 1
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
@@ -43,9 +53,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 99.9 },
-              { "color": "green", "value": 99.95 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 99.9
+              },
+              {
+                "color": "green",
+                "value": 99.95
+              }
             ]
           }
         }
@@ -53,21 +72,28 @@
       "options": {
         "colorMode": "background",
         "graphMode": "none",
-        "reduceOptions": { "calcs": ["lastNotNull"] }
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        }
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "100 * (1 - ((sum(rate(http_server_request_duration_seconds_count{service_name=\"$service\",http_response_status_code=~\"5..\"}[$__range])) or vector(0)) / sum(rate(http_server_request_duration_seconds_count{service_name=\"$service\"}[$__range]))))"
+          "expr": "100 * (1 - ((sum(rate(http_server_request_duration_seconds_count{service_name=\"$service\",http_response_status_code=~\"5..\"}[$__range])) or vector(0)) / sum(rate(http_server_request_duration_seconds_count{service_name=\"$service\"}[$__range])))) or (100 * avg_over_time(((sum(k8s_deployment_available{service_namespace=\"platform\",service_name=\"$service\"}) or sum(k8s_statefulset_ready_pods{service_namespace=\"platform\",service_name=\"$service\"})) / (sum(k8s_deployment_desired{service_namespace=\"platform\",service_name=\"$service\"}) or sum(k8s_statefulset_desired_pods{service_namespace=\"platform\",service_name=\"$service\"})))[$__range:1m])) or (100 * avg_over_time((count(k8s_pod_phase{service_namespace=\"platform\",service_name=\"$service\"} == 2) / count(k8s_pod_phase{service_namespace=\"platform\",service_name=\"$service\"} != 3))[$__range:1m]))"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "Latency SLO — % faster than 500ms",
-      "description": "Share of requests served under the 500ms latency objective (le=\"0.5\" on the stable OTel http.server.request.duration histogram, real seconds). Target 99%.",
+      "title": "Latency SLO \u2014 % faster than 500ms",
+      "description": "Share of requests completing under 500ms. HTTP-only by nature \u2014 a platform component with no HTTP telemetry shows 'no HTTP traffic' here, not a fake number.",
       "datasource": "Prometheus",
-      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 1 },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 1
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
@@ -77,17 +103,29 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 99 },
-              { "color": "green", "value": 99.5 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 99
+              },
+              {
+                "color": "green",
+                "value": 99.5
+              }
             ]
-          }
+          },
+          "noValue": "no HTTP traffic"
         }
       },
       "options": {
         "colorMode": "background",
         "graphMode": "none",
-        "reduceOptions": { "calcs": ["lastNotNull"] }
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        }
       },
       "targets": [
         {
@@ -99,9 +137,14 @@
     {
       "type": "stat",
       "title": "Error budget remaining (99.9% target)",
-      "description": "How much of the 0.1% error budget is left over the range. Negative means the availability SLO is already burned through.",
+      "description": "Budget left of the 0.1% error allowance over the range \u2014 burned by 5xx responses for HTTP services, by not-ready/not-running time for platform components (same fallback chain as Availability). Negative = budget overdrawn.",
       "datasource": "Prometheus",
-      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 1 },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 1
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
@@ -110,9 +153,18 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 25 },
-              { "color": "green", "value": 50 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 25
+              },
+              {
+                "color": "green",
+                "value": 50
+              }
             ]
           }
         }
@@ -120,27 +172,42 @@
       "options": {
         "colorMode": "background",
         "graphMode": "none",
-        "reduceOptions": { "calcs": ["lastNotNull"] }
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        }
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "100 * (1 - (((sum(rate(http_server_request_duration_seconds_count{service_name=\"$service\",http_response_status_code=~\"5..\"}[$__range])) or vector(0)) / sum(rate(http_server_request_duration_seconds_count{service_name=\"$service\"}[$__range]))) / 0.001))"
+          "expr": "100 * (1 - (((sum(rate(http_server_request_duration_seconds_count{service_name=\"$service\",http_response_status_code=~\"5..\"}[$__range])) or vector(0)) / sum(rate(http_server_request_duration_seconds_count{service_name=\"$service\"}[$__range]))) / 0.001)) or (100 * (1 - ((1 - avg_over_time(((sum(k8s_deployment_available{service_namespace=\"platform\",service_name=\"$service\"}) or sum(k8s_statefulset_ready_pods{service_namespace=\"platform\",service_name=\"$service\"})) / (sum(k8s_deployment_desired{service_namespace=\"platform\",service_name=\"$service\"}) or sum(k8s_statefulset_desired_pods{service_namespace=\"platform\",service_name=\"$service\"})))[$__range:1m])) / 0.001))) or (100 * (1 - ((1 - avg_over_time((count(k8s_pod_phase{service_namespace=\"platform\",service_name=\"$service\"} == 2) / count(k8s_pod_phase{service_namespace=\"platform\",service_name=\"$service\"} != 3))[$__range:1m])) / 0.001)))"
         }
       ]
     },
-
     {
       "type": "row",
       "title": "Golden signals (RED)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      }
     },
     {
       "type": "timeseries",
       "title": "Request rate",
       "datasource": "Prometheus",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 7 },
-      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      },
       "targets": [
         {
           "expr": "sum by (service_name) (rate(http_server_request_duration_seconds_count{service_name=\"$service\"}[5m]))"
@@ -151,9 +218,20 @@
       "type": "timeseries",
       "title": "Error rate (5xx)",
       "datasource": "Prometheus",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 7 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 7
+      },
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "color": { "mode": "fixed", "fixedColor": "red" } }
+        "defaults": {
+          "unit": "reqps",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          }
+        }
       },
       "targets": [
         {
@@ -165,8 +243,17 @@
       "type": "timeseries",
       "title": "Latency p50 / p95 / p99",
       "datasource": "Prometheus",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 7 },
-      "fieldConfig": { "defaults": { "unit": "s" } },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
       "targets": [
         {
           "refId": "p50",
@@ -185,60 +272,325 @@
         }
       ]
     },
-
     {
       "type": "row",
       "title": "Resources (CPU / Memory)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      }
     },
     {
       "type": "timeseries",
-      "title": "CPU usage (cores)",
+      "title": "CPU usage vs limit (cores)",
+      "description": "Usage from kubeletstats; the dashed red line is the workload's total CPU limit (sum across pods, k8s_cluster receiver). Usage approaching the line means throttling.",
       "datasource": "Prometheus",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "fieldConfig": { "defaults": { "unit": "none" } },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [10, 10]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
       "targets": [
         {
+          "refId": "A",
           "legendFormat": "{{service_name}}",
           "expr": "sum by (service_name) (k8s_pod_cpu_usage{service_namespace=\"platform\",service_name=\"$service\"})"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "limit",
+          "expr": "sum(k8s_container_cpu_limit{service_namespace=\"platform\",service_name=\"$service\"})"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Memory usage",
+      "title": "Memory usage vs limit",
+      "description": "Usage from kubeletstats; the dashed red line is the workload's total memory limit (sum across pods, k8s_cluster receiver). Usage touching the line means OOM-kill territory.",
       "datasource": "Prometheus",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [10, 10]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
       "targets": [
         {
+          "refId": "A",
           "legendFormat": "{{service_name}}",
           "expr": "sum by (service_name) (k8s_pod_memory_usage_bytes{service_namespace=\"platform\",service_name=\"$service\"})"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "limit",
+          "expr": "sum(k8s_container_memory_limit_bytes{service_namespace=\"platform\",service_name=\"$service\"})"
         }
       ]
     },
-
-    { "type": "row", "title": "Logs (Loki)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 } },
+    {
+      "type": "timeseries",
+      "title": "Replicas \u2014 available vs desired",
+      "description": "From the k8s_cluster receiver (otel-cluster singleton). A gap between the lines is pods that should exist but don't \u2014 Pending or crash-looping; drill into Headlamp for the why. Restart history rides along as the yellow line.",
+      "datasource": "Prometheus",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "min": 0,
+          "custom": {
+            "lineInterpolation": "stepAfter"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "desired"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [10, 10]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "available"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "restarts (30m)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(k8s_deployment_desired{service_namespace=\"platform\",service_name=\"$service\"}) or sum(k8s_statefulset_desired_pods{service_namespace=\"platform\",service_name=\"$service\"})",
+          "legendFormat": "desired"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(k8s_deployment_available{service_namespace=\"platform\",service_name=\"$service\"}) or sum(k8s_statefulset_ready_pods{service_namespace=\"platform\",service_name=\"$service\"})",
+          "legendFormat": "available"
+        },
+        {
+          "refId": "C",
+          "expr": "count(k8s_pod_phase{service_namespace=\"platform\",service_name=\"$service\"} == 2)",
+          "legendFormat": "running (pods)"
+        },
+        {
+          "refId": "D",
+          "expr": "sum(delta(k8s_container_restarts{service_namespace=\"platform\",service_name=\"$service\"}[30m]))",
+          "legendFormat": "restarts (30m)"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Logs (Loki)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Error logs (5m)",
+      "description": "Lines Loki level-detects as error over the last 5 minutes \u2014 works for every workload, instrumented or not.",
+      "datasource": "Loki",
+      "gridPos": {
+        "h": 10,
+        "w": 4,
+        "x": 0,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({service_name=\"$service\"} | detected_level=~\"error|fatal\" [5m]))",
+          "instant": true
+        }
+      ]
+    },
     {
       "type": "logs",
       "title": "Recent logs",
       "datasource": "Loki",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 25 },
+      "gridPos": {
+        "h": 10,
+        "w": 20,
+        "x": 4,
+        "y": 25
+      },
       "options": {
         "showTime": true,
         "wrapLogMessage": true,
         "enableLogDetails": true,
         "sortOrder": "Descending"
       },
-      "targets": [{ "expr": "{service_name=\"$service\"}" }]
+      "targets": [
+        {
+          "expr": "{service_name=\"$service\"}"
+        }
+      ]
     },
-
-    { "type": "row", "title": "Traces (Tempo)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 } },
+    {
+      "type": "row",
+      "title": "Traces (Tempo)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      }
+    },
     {
       "type": "table",
-      "title": "Recent traces — click a traceID to open the flame graph",
+      "title": "Recent traces \u2014 click a traceID to open the flame graph",
       "datasource": "Tempo",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 36 },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
       "targets": [
         {
           "refId": "A",
@@ -249,17 +601,26 @@
         }
       ]
     },
-
     {
       "type": "row",
       "title": "Profiling (Pyroscope)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 46 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 46
+      }
     },
     {
       "type": "flamegraph",
-      "title": "CPU profile — scraped from the service's pprof endpoint by Alloy",
+      "title": "CPU profile \u2014 scraped from the service's pprof endpoint by Alloy",
       "datasource": "Pyroscope",
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 47 },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
       "targets": [
         {
           "refId": "A",

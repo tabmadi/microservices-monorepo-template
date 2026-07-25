@@ -14,7 +14,7 @@
 // with no org is the regression this catches.
 import { expect, test } from "@playwright/test";
 import { OPERATOR_STATE, opsURL } from "../fixtures/env";
-import { register } from "../fixtures/kratos";
+import { register, registerExpectingRejection } from "../fixtures/kratos";
 import { portForward } from "../fixtures/kube";
 
 const KRATOS_ADMIN = "http://127.0.0.1:4434";
@@ -152,5 +152,67 @@ test.describe("self-service registration", () => {
     await expect(del).toBeVisible({ timeout: 15_000 });
     await del.click();
     await expect(page).toHaveURL(/\/orgs$/, { timeout: 15_000 });
+  });
+});
+
+// The breach check is the one password rule that depends on the NETWORK, and it
+// fails OPEN. Kratos' `ignore_network_errors` defaults to true, so when egress to
+// api.pwnedpasswords.com is blocked the lookup simply times out and the breached
+// password is accepted — no error, no failed flow, nothing in the UI. The platform
+// runs default-deny egress (network-policies 00-baseline), so the allow that makes
+// this rule real is a CiliumNetworkPolicy (network-policies 30-ory.yaml), one file
+// away from the policy it enforces and trivial to drop in a refactor.
+//
+// That combination — a security control that silently degrades to "allow" when a
+// NetworkPolicy changes — has no unit-test equivalent and is invisible to every
+// other test in this suite, including the registration test above (which registers
+// with a strong password and passes either way). It is why this is an e2e.
+//
+// Requires egress to api.pwnedpasswords.com. Deliberately NOT @smoke: an offline
+// developer would see it fail, and the smoke lane must stay runnable on a plane.
+//
+// DEBUGGING NOTE, learned the hard way: Kratos caches breach lookups in memory for
+// the life of the process. Re-running this test against a pod that already checked
+// this password answers from cache and passes WITHOUT touching the network — so
+// verifying that the test still catches a broken egress policy requires a cold
+// Kratos (`kubectl rollout restart deploy/ory-kratos`) first. Measured: cached
+// rejection ~1.5s, cold rejection ~3s, cold with egress blocked ~52s (the lookup
+// times out, then the password sails through).
+test.describe("password breach policy", () => {
+  // Register anonymously. Explicit, not inherited: this describe is a sibling of
+  // the operator-scoped one above, and an authenticated visitor is bounced off the
+  // registration flow entirely (see the note on the test above).
+  test.use({ storageState: undefined });
+
+  const BREACHED_EMAIL = `breached-${Date.now()}@e2e.localtest.me`;
+
+  // 16 chars, so it clears min_password_length (12), and dissimilar to the
+  // identifier, so identifier_similarity_check cannot fire either. The breach check
+  // is the ONLY rule left that can reject it — which is what makes the assertion
+  // below specific rather than "something said no".
+  const BREACHED_PASSWORD = "passwordpassword";
+
+  test("a breached password is refused and creates no identity", async ({ page }) => {
+    const rendered = await registerExpectingRejection(page, BREACHED_EMAIL, BREACHED_PASSWORD);
+
+    // Pin the REASON, not just the refusal. With HIBP unreachable this whole flow
+    // succeeds instead, so a bare "was rejected" assertion would still be green on
+    // a broken cluster if any other rule happened to fire.
+    expect(rendered, "rejection must name the breach check, not another rule").toMatch(
+      /data breach/i,
+    );
+
+    // The security assertion proper: no identity exists. This is the line that goes
+    // red when the egress allow is missing — the flow completes and Kratos creates
+    // the account with a password known to be in a public breach corpus.
+    const pf = await portForward("ory-kratos-admin", 4434, 80);
+    try {
+      expect(
+        await kratosIdFor(BREACHED_EMAIL),
+        "a breached password must not create an identity",
+      ).toBeNull();
+    } finally {
+      pf.stop();
+    }
   });
 });

@@ -11,7 +11,8 @@
         "datasource": "Prometheus",
         "query": "label_values(hubble_drop_total, reason)",
         "includeAll": true,
-        "current": { "text": "All", "value": "$__all" }
+        "description": "Defaults to POLICY_DENIED — the verdict this dashboard and PolicyDropsDetected are about. Switch to All to see every reason, but expect a constant floor of UNSUPPORTED_L3_PROTOCOL: the kernel gives every pod an IPv6 link-local and solicits a router forever (router_solicitations=-1), Cilium runs IPv4-only, so it drops them. Nothing is broken — that drop IS the IPv4-only enforcement.",
+        "current": { "text": "POLICY_DENIED", "value": "POLICY_DENIED" }
       }
     ]
   },

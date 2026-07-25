@@ -34,6 +34,13 @@ spec:
         - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: cloudnative-pg }
       toPorts:
         - ports: [{ port: "8000", protocol: TCP }]
+    # otel-cluster scrapes the CNPG instance manager's built-in exporter
+    # (metrics port 9187) and re-exports over OTLP (ADR-0011: Prometheus itself
+    # scrapes nothing) — the postgres component metrics on the dashboards.
+    - fromEndpoints:
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: otel-cluster }
+      toPorts:
+        - ports: [{ port: "9187", protocol: TCP }]
 ---
 ## OpenFGA — authorization store (HTTP API, port 8080). authz-server checks
 ## permissions; the openfga-seed job creates the store + writes the model and

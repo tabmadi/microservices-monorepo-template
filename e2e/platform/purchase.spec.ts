@@ -79,10 +79,16 @@ test.describe("full purchase scenario", () => {
   // Step 1: the operator authors the product through the admin console. Reuses the
   // saved AAL2 operator session; the generated "add product" page writes to catalog
   // east-west (the same path admin.spec's CRUD covers).
+  //
+  // Tagged @smoke because step 2 is, and step 2 cannot run without it: it hands
+  // over `productId` through the closure below. `test:smoke` selects by --grep,
+  // which filters at the individual-test level and does not follow that
+  // dependency — so tagging only step 2 made the smoke lane fail on a bare
+  // `expect(productId).toBeTruthy()` while the full run stayed green.
   test.describe("operator adds a product", () => {
     test.use({ storageState: OPERATOR_STATE });
 
-    test("via the admin console add-product page", async ({ page }) => {
+    test("via the admin console add-product page @smoke", async ({ page }) => {
       await page.goto(`${opsURL("lowdefy")}/products_new`);
       await page.getByLabel(/^name$/i).fill(PRODUCT_NAME);
       await page.getByLabel(/price/i).fill("4200");

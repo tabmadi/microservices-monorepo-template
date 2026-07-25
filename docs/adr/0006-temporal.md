@@ -125,15 +125,33 @@ Sharing an activity *across services* by putting domain logic in `libs/` is a sm
 
 ### Wall-clock: workflows complete within one deploy cycle
 
-A workflow's wall-clock should fit inside one prod deploy cycle (~1 week per [ADR-0004](0004-gitops.md)). This keeps us out of `workflow.GetVersion` / patching ceremony.
+A workflow's wall-clock should fit inside one prod deploy cycle (~1 week per [ADR-0004](0004-gitops.md)). The reason is event-history size and operational legibility — **not** avoiding versioning, which the section below now handles directly.
 
 Long-running workflows (subscription billing, multi-day onboarding nudges, inactivity timers) are permitted but each requires:
 
 1. An entry in `docs/temporal/long-running.md` listing the workflow and its expected wall-clock.
-2. A documented versioning plan using `workflow.GetVersion`.
-3. Replay tests (`workflow.NewReplayer`) covering historical event histories in CI.
+2. Replay tests (`workflow.NewReplayer`) covering historical event histories in CI.
+3. If, and only if, the workflow opts out of Pinned into `AutoUpgrade`, a documented `workflow.GetVersion` patching plan — an `AutoUpgrade` execution moves between Deployment Versions mid-flight and is the one case that must stay replay-safe by hand.
 
 Liberal use of workflows for multi-step / compensable / cross-system operations; conservative use of long wall-clocks.
+
+### Deploying workflow code: Worker Deployment Versioning
+
+Changing workflow code under a running execution is the failure mode this section exists for: a workflow started before a deploy is resumed by a worker running after it, and if the code no longer replays the recorded history the execution dies with a non-determinism error. A short wall-clock shrinks the exposure window but does not close it — a checkout that runs for thirty seconds can still be mid-flight when a worker rolls.
+
+**Workers run versioned, and Workflows are Pinned by default.** Each worker declares a Worker Deployment Version (a deployment name plus a Build ID); the server routes new executions to whichever version is *Current*, and a Pinned execution then runs start-to-finish on the version that began it. A deploy therefore cannot break in-flight work, and the ordinary case needs no `workflow.GetVersion` at all. Temporal's own guidance is that versioning, not patching, is the default for production; patching remains the fallback where versioned deployment is impossible.
+
+Three consequences worth stating plainly, because each one has bitten:
+
+- **The Build ID must track the code, not the release channel.** The controller derives it from the container image tag plus a hash of the pod template, so a configuration-only change — a new env var, a changed resource limit — is also a new Deployment Version. That is stricter than deriving it from the image alone ([ADR-0013](0013-release-and-versioning.md)) and is why the chart no longer computes it.
+- **A pin is only as good as the pods behind it.** Pinning a workflow to a version it can no longer reach is worse than not pinning it: the execution does not fail over to the new code, it simply waits. A plain rolling `Deployment` deletes the old version's pods the instant the rollout completes, so the protection would last only as long as the rollout overlap — seconds — rather than the workflow's lifetime. Workers are therefore `WorkerDeployment` custom resources reconciled by the **Temporal Worker Controller**, which keeps one Kubernetes Deployment per Build ID alive until Temporal reports that version Drained, and only then scales it down and deletes it. This is the "rainbow deploy" shape, and it is the reason the operator is worth its footprint: retaining a version until its work finishes depends on drainage state that only Temporal knows and that changes long after the sync ends, so it is reconciler work, not something a chart can template.
+- **Promotion is the controller's job, not the pipeline's.** The controller registers each version, promotes it per `rollout.strategy`, and injects `TEMPORAL_DEPLOYMENT_NAME` / `TEMPORAL_WORKER_BUILD_ID` itself — upstream is explicit that those must not be set by hand. Rollback is `temporal worker deployment set-current-version` against the previous Build ID, which still has running pods precisely because sunset is delayed.
+- **Sessions and versioning are mutually exclusive.** The SDK refuses `EnableSessionWorker` together with versioning, so a service that genuinely needs sessions opts out of versioning explicitly (`worker.versioning.enabled: false`) and owes a patching plan instead.
+- **Deleting a `WorkerDeployment` blocks while its workers are still polling.** The CR carries a `temporal.io/delete-protection` finalizer; on delete the controller asks Temporal to remove each Deployment Version, and Temporal refuses with `cannot be deleted since it has active pollers` for as long as pods of that version exist — and for a further poller-expiry window after they are gone. The controller retries indefinitely, so the CR sits `Terminating` and ArgoCD cannot recreate it. Removing a worker (renaming a service, flipping `worker.enabled` off, pruning) therefore means scaling the versioned Deployments to zero first and waiting for pollers to expire. The break-glass is `kubectl patch workerdeployment <name> --type merge -p '{"metadata":{"finalizers":null}}'`, which leaves the Temporal-side version records behind to age out.
+
+### Draining a worker on rollout
+
+Distinct from replay safety, and routinely confused with it: when a worker pod is rolled, activities *currently executing* are lost unless the worker is told to wait. The Go SDK's `WorkerStopTimeout` defaults to `0s` — no wait — so the platform sets it explicitly, and the chart derives the pod's `terminationGracePeriodSeconds` from it so kubelet always waits strictly longer than the worker does. Configuring the grace period independently is how this silently regresses.
 
 ### Replacement of legacy patterns
 
@@ -182,7 +200,9 @@ gated by Cilium NetworkPolicy — no per-call token); trace propagation through 
 
 ### Negative / Risks
 
-- Non-determinism rules are a real cognitive tax. Mitigated by `workflowcheck`, code-review checklist, and PR template.
+- Non-determinism rules are a real cognitive tax. Mitigated by `workflowcheck`, code-review checklist, and PR template — and, for the specific case of deploying under running executions, by Pinned versioning, which removes the need to reason about replay compatibility at all.
+- Versioning adds an operator to the platform's operational surface, and with it a webhook in the admission path and a reconciler that can fall behind. A stalled controller means new worker versions are never promoted — new executions have nowhere to run — so it is a genuine dependency of the deploy path, not a background convenience.
+- Old Deployment Versions linger while their Pinned executions drain, so a service runs more than one worker version at once for as long as `sunset` allows. This is the feature working, but pod count and Temporal's version list are larger than the naive desired state, and a version whose workflows never finish never drains — a long-lived workflow can therefore pin a version indefinitely. That is the real cost of the ~1 week wall-clock rule being a rule.
 - Temporal server is critical infrastructure. Mitigated by HA Postgres and replay tests proving workflows tolerate restarts.
 - Per-activity latency (typically tens of milliseconds) rules workflows out of sub-100ms request paths. The scope rule already excludes those.
 - One worker deployment per service multiplies pod count. Accepted; preserves ownership.
@@ -204,7 +224,13 @@ gated by Cilium NetworkPolicy — no per-call token); trace propagation through 
 - Cross-service workflow invocation is HTTP through the generated client. Direct Temporal-client calls across service boundaries are forbidden.
 - Cross-service result wait is one of: poll the handle, webhook callback, fire-and-forget. Direct cross-service Temporal signals are forbidden.
 - Activities are placed by ownership: in-service for service-specific logic, in `libs/go/temporal-activities/` for stateless infrastructure, never shared across services as a domain wrapper.
-- Workflow wall-clock fits within one prod deploy cycle (~1 week) by default. Longer wall-clocks require an entry in `docs/temporal/long-running.md` with a versioning plan and replay tests.
+- Workflow wall-clock fits within one prod deploy cycle (~1 week) by default. Longer wall-clocks require an entry in `docs/temporal/long-running.md` with replay tests. (review-only)
+- Workers run with Worker Deployment Versioning enabled and a default versioning behaviour of Pinned. Disabling it (`worker.versioning.enabled: false`) is permitted only where the SDK forbids the combination — a service using Temporal sessions — and obliges that service to a documented `workflow.GetVersion` patching plan. (review-only)
+- A versioned worker is a `WorkerDeployment` reconciled by the Temporal Worker Controller, never a plain `Deployment`. A rolling Deployment deletes the previous version's pods on completion, which strands the Pinned executions the versioning exists to protect. (review-only)
+- Build IDs and the `TEMPORAL_DEPLOYMENT_NAME` / `TEMPORAL_WORKER_BUILD_ID` env vars are set by the controller alone. A chart that injects them by hand fights the reconciler and produces versions that do not match the pods running them. (review-only)
+- Sunset delays (`sunset.scaledownDelay` / `deleteDelay`) are only ever lengthened, never shortened toward zero. Reclaiming a version before Temporal reports it Drained re-creates the stranding this design removes. (review-only)
+- A workflow that opts into `AutoUpgrade` owes a `workflow.GetVersion` patching plan and replay tests, because it moves between Deployment Versions mid-execution. (review-only)
+- Worker graceful-stop is configured, and the pod's `terminationGracePeriodSeconds` is derived from the worker stop timeout rather than set independently. (review-only)
 - Workflow code is deterministic; side effects go through activities; the `workflowcheck` analyzer enforces this in CI.
 - Activities are idempotent and accept retries.
 - Workflow IDs encode business intent (`payment-{order_id}`), not opaque UUIDs.

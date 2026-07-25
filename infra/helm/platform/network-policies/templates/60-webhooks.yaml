@@ -27,3 +27,23 @@ spec:
     - fromEntities: [kube-apiserver]
       toPorts:
         - ports: [{ port: "9443", protocol: TCP }]
+---
+## Temporal Worker Controller (ADR-0006). Its WorkerResourceTemplate validating
+## webhook is always on — not optional like the WorkerDeployment one — so the
+## apiserver must reach 9443 or every WorkerResourceTemplate write hangs.
+##
+## Egress needs nothing here: the controller only talks to the Kubernetes API and
+## the Temporal frontend, both already allowed by 00-baseline (kube-apiserver /
+## host / remote-node, and intra-namespace to temporal-frontend).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: temporal-worker-controller-webhook
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: temporal-worker-controller
+  ingress:
+    - fromEntities: [kube-apiserver]
+      toPorts:
+        - ports: [{ port: "9443", protocol: TCP }]

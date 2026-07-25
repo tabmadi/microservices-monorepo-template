@@ -1,8 +1,17 @@
 {{- if .Values.externalObjectStorage }}
-## Prod only: Loki and Tempo push chunks/traces to an off-cluster S3 bucket
-## (ADR-0003), so they need egress to the internet on 443. Prometheus keeps a
-## local TSDB and needs no bucket egress. Local uses in-cluster MinIO and leaves
-## this off — no platform pod reaches the world.
+## `externalObjectStorage` gates every allow in this file: it means "the buckets
+## this platform writes to live OUTSIDE the cluster". Set it in the per-env values
+## for any env whose storage is a real S3 bucket (prod), and leave it off wherever
+## storage is the in-cluster MinIO (local, dev, staging) — there the writes stay
+## intra-namespace and the baseline already covers them. It is off by default, so
+## forgetting it in a new env fails CLOSED: backups and chunk pushes are dropped.
+##
+## Loki and Tempo push chunks/traces to the bucket (ADR-0003) and so need egress on
+## 443. Prometheus keeps a local TSDB and needs none.
+##
+## Note this is no longer the only world egress on the platform: kratos reaches
+## api.pwnedpasswords.com in EVERY env (30-ory.yaml), because a breach check that
+## is off in one env is a weaker password policy in that env, not a smaller one.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -13,6 +22,35 @@ spec:
       - key: app.kubernetes.io/name
         operator: In
         values: [loki, tempo]
+  egress:
+    - toEntities: [world]
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+---
+## Postgres (CNPG) continuous backup — the same off-cluster-bucket condition as the
+## LGTM rule above, for the one workload where a silent failure is unrecoverable.
+##
+## CNPG archives WAL and runs base backups from the INSTANCE pods themselves
+## (barman-cloud inside the instance manager), not from a separate Job, so the
+## allow belongs on the same endpoints 10-datastores.yaml admits traffic TO.
+## `backup.enabled` is true in the chart default: dev/staging point endpointURL at
+## in-cluster MinIO (covered by the baseline's intra-namespace egress), and prod
+## leaves it empty, which means real AWS S3 — reachable only through this rule.
+##
+## Without it the failure is silent in the worst possible way: Postgres keeps
+## serving, `archive_command` fails in the background, WAL piles up on the volume
+## and the recovery point quietly stops advancing. Nothing pages until someone
+## needs the backup. That is precisely why this is gated by the same flag as the
+## bucket it writes to, rather than left to be noticed.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: postgres-backup-egress
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/component: database
   egress:
     - toEntities: [world]
       toPorts:

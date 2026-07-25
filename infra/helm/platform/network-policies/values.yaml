@@ -3,3 +3,20 @@
 # (ADR-0003). Local runs against in-cluster MinIO (covered by intra-namespace
 # egress), so it stays false and no pod reaches the internet at all.
 externalObjectStorage: false
+
+# The cluster's pod CIDR (k3s `--cluster-cidr`, default 10.42.0.0/16 — ADR-0003).
+#
+# Used ONLY by the "stale peer" allows (20-temporal.yaml, 40-observability.yaml),
+# where a workload keeps dialling the IP of a pod that has since been deleted.
+# Cilium resolves a pod IP to an identity, and a deleted pod has none, so the
+# address falls back to the `world` identity and every identity-based allow —
+# including the baseline's intra-namespace rule — stops matching it. The traffic
+# is then denied, which is what fills PolicyDropsDetected after any rollout.
+#
+# Matching by CIDR is the only construct that survives that: `toEntities: cluster`
+# is identity-based and has the same blind spot. It is deliberately paired with a
+# tight port list at each use site, so it grants "may reach a pod address on the
+# ports this workload already uses", not "may reach the pod network".
+#
+# Override per env if the cluster is not on the k3s default.
+podCIDR: "10.42.0.0/16"

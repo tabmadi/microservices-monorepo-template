@@ -1,0 +1,60 @@
+# Temporal Worker Controller (ADR-0006) — the operator that makes Pinned
+# versioning actually hold.
+#
+# WHY AN OPERATOR AND NOT A TEMPLATE. Keeping a drained version's pods alive is
+# not something a chart can express: the chart renders desired state from values,
+# but "keep the previous version until Temporal says its Workflows have finished"
+# depends on drainage state that only Temporal knows and that changes after the
+# sync completes. Hand-rolling it would mean the deploy pipeline tracking a list
+# of live Build IDs in values and pruning them later — state in the wrong place,
+# and exactly the kind of bespoke machinery this repo avoids. The controller
+# watches drainage and owns the lifecycle, which is a reconciler's job.
+#
+# It replaces the previous self-managed approach (chart-injected Build ID env +
+# a PostSync `set-current-version` hook). Both cannot run at once: the controller
+# derives the Build ID itself (image tag + pod-template hash, so a config-only
+# change is also a new version) and injects TEMPORAL_DEPLOYMENT_NAME /
+# TEMPORAL_WORKER_BUILD_ID, and upstream is explicit that these must not be set
+# by hand.
+
+temporal-worker-controller:
+  # One replica: this is a leader-elected reconciler, and the local tier is a
+  # single node (a second replica would sit unschedulable, like the Cilium
+  # operator's default). Deployed envs override in their per-env values.
+  replicas: 1
+
+  certmanager:
+    # The platform already runs cert-manager (infra/helm/platform/cert-manager,
+    # wave 0), so the chart's bundled subchart stays off and only the Issuer +
+    # Certificate for the webhook are created. `enabled` is NOT optional here:
+    # the WorkerResourceTemplate validating webhook is always on, so it always
+    # needs serving TLS.
+    install: false
+    enabled: true
+
+  # The optional WorkerDeployment validating webhook. Off (chart default) — it
+  # rejects bad CRs earlier, but it also puts an admission webhook in the path of
+  # every worker deploy, and a broken webhook then blocks deploys entirely. The
+  # always-on WorkerResourceTemplate webhook is unavoidable; this one is a
+  # deliberate "not yet".
+  webhook:
+    enabled: false
+
+  metrics:
+    # No bearer-token auth proxy in front of /metrics. The platform's scrape path
+    # is the node-local OTel collector (ADR-0011), which does not present a
+    # token, and egress here is already constrained by NetworkPolicy.
+    disableAuth: true
+
+  prometheus:
+    # Upstream marks this "not yet supported"; metrics reach Grafana through the
+    # OTel collector like every other platform component, not a ServiceMonitor.
+    enabled: false
+
+# Temporal endpoint the generated workers dial, rendered as the `Connection` CR
+# every service's WorkerDeployment references by name. Plaintext in-cluster: the
+# frontend is reached over the pod network, which Cilium already encrypts with
+# WireGuard (ADR-0003), so there is no second TLS layer to configure here.
+connection:
+  name: platform-temporal
+  hostPort: "temporal-frontend.platform.svc.cluster.local:7233"

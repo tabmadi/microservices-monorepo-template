@@ -3,6 +3,17 @@
 minio:
   enabled: false
 
+# ...which is exactly why this is on. With MinIO gone, prod's object storage is a
+# real off-cluster bucket: Loki/Tempo fall back to the chart's
+# s3.eu-central-1.amazonaws.com endpoint, and postgres' backup.s3.endpointURL is
+# empty, meaning real AWS S3. Default-deny egress (network-policies 00-baseline)
+# drops all of that unless this flag opens it (network-policies 70-*).
+#
+# Read as a pair with `minio.enabled: false`: turning MinIO off in an env without
+# turning this on is the failure mode — Postgres keeps serving while WAL archiving
+# silently fails in the background, and nothing pages until a restore is needed.
+externalObjectStorage: true
+
 # Top-level `cluster:` — the postgres chart's own values schema has no
 # `postgres:` namespace wrapper (unlike the dependency subcharts below).
 cluster:

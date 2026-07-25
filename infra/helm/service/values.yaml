@@ -25,6 +25,46 @@ worker:
     requests: { cpu: "50m",  memory: "64Mi" }
     limits:   { cpu: "500m", memory: "256Mi" }
 
+  # Graceful drain on rollout (ADR-0006). On SIGTERM the worker stops polling and
+  # waits up to stopTimeoutSeconds for its in-flight Activities to finish; the SDK
+  # default is 0s, i.e. abandon them and let every one time out and retry.
+  #
+  # terminationGracePeriodSeconds is DERIVED (stopTimeoutSeconds + the buffer
+  # below) rather than configured separately, because the invariant that kubelet
+  # must wait strictly longer than the worker is the whole point: set the grace
+  # period lower and SIGKILL lands mid-drain, which is the exact failure the stop
+  # timeout exists to prevent. Raise the buffer, not the grace period.
+  stopTimeoutSeconds: 25
+  terminationGraceBufferSeconds: 10
+
+  # Worker Deployment Versioning (ADR-0006). Pins each Workflow Execution to the
+  # Deployment Version that started it, so a deploy cannot break work already in
+  # flight and workflow.GetVersion patching is not needed.
+  #
+  # When on, the worker is a `WorkerDeployment` CR and the Temporal Worker
+  # Controller (infra/helm/platform/temporal-worker-controller) reconciles one
+  # Deployment per Build ID. That is what makes the pin real: the previous
+  # version keeps its pods until Temporal reports it Drained, so a Workflow
+  # pinned to it still has somewhere to run. A plain rolling Deployment deletes
+  # those pods the moment the rollout finishes, which strands exactly the work
+  # versioning was meant to protect.
+  #
+  # Turning this OFF is a real decision, not a default: unversioned workers make
+  # every Workflow-code change a potential non-determinism error for executions
+  # that predate the deploy. It exists as a switch because a service that needs
+  # Temporal sessions cannot use versioning (the SDK forbids the combination).
+  versioning:
+    enabled: true
+    # Promote a new version as soon as its pods are ready. See the template for
+    # why this, and not a Progressive ramp, is the platform default.
+    rollout:
+      strategy: AllAtOnce
+    # Keep a drained version's pods for an hour, and the Deployment itself for a
+    # day, before reclaiming them.
+    sunset:
+      scaledownDelay: 1h
+      deleteDelay: 24h
+
 server:
   replicas: 2
   port: 8080
@@ -37,6 +77,14 @@ server:
 # from the service image itself (it bakes the static dbmate binary + /db/migrations).
 migrations:
   enabled: true
+
+# Temporal wiring for a versioned worker. `connectionRef` names the `Connection`
+# CR the platform chart renders once (infra/helm/platform/temporal-worker-
+# controller); the controller reads the frontend address from there and injects
+# it into the worker pods, so the endpoint is defined in exactly one place.
+temporal:
+  connectionRef: "platform-temporal"
+  namespace: "default"
 
 # Standard observability env (ADR-0011). The shared library reads these.
 otel:

@@ -43,6 +43,7 @@ spec:
                 - { path: "infra/helm/platform/sops-operator" }
                 - { path: "infra/helm/platform/cert-manager" }
                 - { path: "infra/helm/platform/network-policies" }
+                - { path: "infra/helm/platform/temporal-worker-controller-crds" }
   template:
     metadata:
       name: "{{ .env }}-platform-{{ .path.basename }}"
@@ -168,6 +169,7 @@ spec:
                 - { path: "infra/helm/platform/observability" }
                 - { path: "infra/helm/platform/ory" }
                 - { path: "infra/helm/platform/temporal" }
+                - { path: "infra/helm/platform/temporal-worker-controller" }
                 - { path: "infra/helm/platform/openfga" }
                 - { path: "infra/helm/platform/pgweb" }
                 - { path: "infra/helm/platform/headlamp" }

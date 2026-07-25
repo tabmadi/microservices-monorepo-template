@@ -1,0 +1,21 @@
+## The one Temporal endpoint every service's WorkerDeployment points at.
+##
+## Declared here rather than per service because it is platform wiring, not
+## service configuration: the CR must live in the same namespace as the
+## WorkerDeployments that reference it, and duplicating the frontend address into
+## five service charts is how one of them ends up stale.
+##
+## No TLS block: this is an in-cluster address, and pod-to-pod traffic is already
+## encrypted by Cilium's WireGuard transparent encryption (ADR-0003). A deployed
+## env pointing at Temporal Cloud instead would add `tls.serverName` plus one of
+## `apiKeySecretRef` / `mutualTLSSecretRef` here — the CRD enforces that those two
+## are mutually exclusive.
+apiVersion: temporal.io/v1alpha1
+kind: Connection
+metadata:
+  name: {{ .Values.connection.name }}
+  labels:
+    app.kubernetes.io/name: temporal-worker-controller
+    app.kubernetes.io/part-of: platform
+spec:
+  hostPort: {{ .Values.connection.hostPort | quote }}

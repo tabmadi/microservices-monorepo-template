@@ -21,6 +21,44 @@ spec:
             - { port: "7234", protocol: TCP }
             - { port: "7235", protocol: TCP }
             - { port: "7239", protocol: TCP }
+    # otel-cluster scrapes each server role's Prometheus endpoint (metrics port
+    # 9090) and re-exports over OTLP (ADR-0011: Prometheus itself scrapes
+    # nothing) — the temporal component metrics on the dashboards.
+    - fromEndpoints:
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: otel-cluster }
+      toPorts:
+        - ports: [{ port: "9090", protocol: TCP }]
+  egress:
+    # Stale ring members. Temporal records every server host in the
+    # `cluster_membership` Postgres table with `record_expiry = last_heartbeat +
+    # 48h` — a hardcoded server constant with no dynamic-config override (checked
+    # against the 1.31.1 binary's config table). Every role keeps gossiping to
+    # every row until it expires, so for TWO DAYS after any restart the four roles
+    # dial the IPs of pods that no longer exist.
+    #
+    # Those addresses have no Cilium identity, so the ingress rule above and the
+    # baseline's intra-namespace egress — both identity-based — cannot match them
+    # and the SYNs are denied. Measured on this cluster: ~18 drops/min, sustained,
+    # against 13 dead rows and 4 live ones, which is what kept PolicyDropsDetected
+    # firing indefinitely after a temporal rollout.
+    #
+    # This allow does not create reachability that the policy did not already
+    # intend: the same ports are already open between live temporal pods. It only
+    # restates the intent in terms Cilium can still evaluate once the peer is
+    # gone, so a doomed connection fails as "connection refused" rather than as a
+    # policy drop. The ports are the membership (69xx) and RPC (72xx) pairs the
+    # ingress rule lists, and nothing else listens on them.
+    - toCIDR: [{{ .Values.podCIDR | quote }}]
+      toPorts:
+        - ports:
+            - { port: "6933", protocol: TCP }
+            - { port: "6934", protocol: TCP }
+            - { port: "6935", protocol: TCP }
+            - { port: "6939", protocol: TCP }
+            - { port: "7233", protocol: TCP }
+            - { port: "7234", protocol: TCP }
+            - { port: "7235", protocol: TCP }
+            - { port: "7239", protocol: TCP }
 ---
 ## Frontend RPC (7233) is the client entrypoint: app workers, temporal-web and
 ## admintools call it. Any platform pod may reach the frontend on 7233 only.

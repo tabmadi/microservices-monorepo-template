@@ -24,6 +24,50 @@ spec:
         - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: authz }
       toPorts:
         - ports: [{ port: "4434", protocol: TCP }]
+  egress:
+    # HaveIBeenPwned breach check (ADR-0010). Kratos' password method is
+    # configured `haveibeenpwned_enabled: true` + `max_breaches: 0`
+    # (infra/auth/kratos/values.yaml), so EVERY registration, password login and
+    # password change does a k-anonymity range lookup against
+    # api.pwnedpasswords.com over HTTPS. Without this allow, default-deny egress
+    # drops it — and the failure is SILENT, not loud: Kratos'
+    # `ignore_network_errors` defaults to true, so the lookup times out and the
+    # password is accepted anyway. Measured on a default-deny cluster: one
+    # registration = ~160 dropped SYNs over ~20s of retries, a 20s latency tax on
+    # the flow, and a breached password (`passwordpassword`) accepted despite
+    # max_breaches: 0. That is the whole PolicyDropsDetected signal AND a real
+    # hole in the password policy, so this allow is a security control, not a
+    # convenience.
+    #
+    # ON IN EVERY ENV, INCLUDING LOCAL (ADR-0016). The breach check is the one
+    # place where an air-gapped local would not merely be smaller than prod but
+    # would silently enforce a WEAKER password policy — the exact class of
+    # divergence environment parity exists to prevent. A developer offline gets
+    # today's degraded-but-working behaviour (timeout, password accepted); a
+    # developer online gets prod's behaviour.
+    #
+    # toFQDNs, not `toEntities: world` — the allow is one hostname on one port,
+    # and Cilium's DNS proxy pins it to whatever IPs HIBP's CDN answers with
+    # (Cloudflare, currently 104.17.x.x) instead of opening the whole internet.
+    # The wildcard DNS rule below is REQUIRED and is not a second hole: toFQDNs
+    # only works if Cilium sees the DNS answer, and matching `*` keeps every other
+    # in-cluster name resolvable (an L7 DNS rule scoped to just the HIBP name
+    # would make Cilium proxy kratos' DNS and drop every service lookup).
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toFQDNs:
+        - matchName: "api.pwnedpasswords.com"
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
 ---
 ## Oathkeeper — the edge auth gate. Traefik forwards through the proxy (4455) and
 ## queries the decision API (4456).

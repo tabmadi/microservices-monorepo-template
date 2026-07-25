@@ -82,6 +82,42 @@ export async function register(page: Page, email: string, password: string): Pro
   await expect(page).not.toHaveURL(/\/auth\/register/, { timeout: 30_000 });
 }
 
+// registerExpectingRejection drives the same two-step form as `register` but for
+// the opposite outcome: the password policy REFUSES the credential, so Kratos
+// re-renders the flow with the reason attached instead of leaving it. Returns the
+// rendered text so the caller can pin WHICH rule fired — a test that only asserted
+// "rejected" would pass just as happily when the password was refused for being
+// too short, which is exactly how a dead breach check hides.
+export async function registerExpectingRejection(
+  page: Page,
+  email: string,
+  password: string,
+): Promise<string> {
+  await gotoFlow(page, init("registration"));
+  await page.locator('input[name="traits.email"]').waitFor({ state: "visible", timeout: 20_000 });
+  await page.fill('input[name="traits.email"]', email);
+  await page.click(submitFor("profile"));
+
+  await page.locator('input[name="password"]').waitFor({ state: "visible", timeout: 20_000 });
+  await page.fill('input[name="password"]', password);
+  await page.click(submitFor("password"));
+
+  // Staying on /auth/register is the rejection signal — the inverse of the
+  // "left the form" success signal `register` waits for. The re-rendered credential
+  // step carries the message on the password node (KratosFlow renders node messages
+  // as the input's hint), so read the whole page rather than pinning that markup.
+  //
+  // Leaving the form here means the policy ACCEPTED the credential. Say so in the
+  // message: the raw diff ("expected /auth/register, got /") reads like a routing
+  // bug rather than what it is.
+  await expect(
+    page,
+    "password was ACCEPTED — the policy that should have refused it did not fire",
+  ).toHaveURL(/\/auth\/register/, { timeout: 30_000 });
+  await page.locator('input[name="password"]').waitFor({ state: "visible", timeout: 20_000 });
+  return page.locator("body").innerText();
+}
+
 // operatorLogin performs a complete operator login from a fresh context: first
 // factor (password), then — because an operator has TOTP enrolled — the second
 // factor on the same /auth/login flow, answered with the known secret. Ends with

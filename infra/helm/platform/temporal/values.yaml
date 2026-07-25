@@ -1,5 +1,19 @@
 temporal:
   server:
+    # No phone-home. Every Temporal server role starts a version checker that
+    # resolves and dials version-info.temporal.io (CloudFront) on 443; under
+    # default-deny egress that is dropped, and it is the second-largest source of
+    # PolicyDropsDetected noise after the Ory binaries. Confirmed the hard way, by
+    # putting an L7 DNS visibility policy on the temporal pods and reading the query
+    # off the wire — the name appears nowhere in the chart or the server config,
+    # only in the binary's env table as TEMPORAL_VERSION_CHECK_DISABLED.
+    #
+    # Set on `server` (not a single role) so it lands on frontend/history/matching/
+    # worker alike: the checker is per-process, exactly like Ory's SQA_OPT_OUT,
+    # where kratos-only was not enough and oathkeeper kept tripping the alert.
+    additionalEnv:
+      - name: TEMPORAL_VERSION_CHECK_DISABLED
+        value: "true"
     config:
       # Chart 1.x persistence schema (UPGRADING.md): stores live under
       # persistence.datastores.<name> and are selected by defaultStore /

@@ -114,6 +114,10 @@ spec:
             - run
             - --server.http.listen-addr=0.0.0.0:12345
             - --storage.path=/var/lib/alloy/data
+            # No phone-home (same stance as grafana.ini analytics): without this
+            # Alloy dials Grafana Labs' usage-stats endpoint on 443, which the
+            # default-deny egress correctly drops — pure PolicyDropsDetected noise.
+            - --disable-reporting
             - /etc/alloy/config.alloy
           ports:
             - { name: http, containerPort: 12345 }

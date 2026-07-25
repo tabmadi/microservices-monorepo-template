@@ -1,0 +1,102 @@
+# Capacity + saturation alerts (ADR-0011). Native Prometheus rule-file format —
+# mounted into Prometheus via the `prometheus-alerts` ConfigMap (see
+# service-availability.yaml for the delivery path).
+#
+# These answer TWO questions that are routinely conflated, and both have to be
+# asked because either one can stop the platform on its own:
+#
+#   1. SCHEDULER capacity — sum(requests) vs node allocatable. When this fills,
+#      Kubernetes refuses to place new pods even though real usage may be ~5%.
+#      Measured on the local tier: 1.11 CPU requested against 0.55 in use, i.e.
+#      the requests are the binding constraint long before the hardware is.
+#   2. REAL saturation — actual usage vs capacity. This is what OOM-kills pods
+#      and throttles CPU.
+#
+# Sources are the metrics the platform already collects (ADR-0011: Prometheus
+# scrapes nothing): `k8s_node_*` from the kubeletstats receiver on the node-local
+# collector, `k8s_node_allocatable_*` from the k8s_cluster receiver on
+# otel-cluster, `k8s_container_*_request*` likewise. No node_exporter and no
+# kube-state-metrics — both would duplicate the above under a second set of names.
+#
+# Thresholds are deliberately EARLIER than kubelet's own. This cluster pins
+# eviction-hard to 2% and image-gc-high to 98% (scripts/cluster-ensure.sh) so a
+# near-full developer disk does not evict the platform — which also means kubelet
+# will not warn in time. These rules are the warning.
+groups:
+  - name: capacity.disk
+    rules:
+      # Threshold: the condition that has actually bitten this project (a full
+      # host disk). 15% is chosen against the 2% eviction floor, not the stock
+      # 10-15% one — there needs to be room to react, and reclaiming space on a
+      # k3d node means pruning images and build cache, not deleting a file.
+      - alert: NodeDiskSpaceLow
+        expr: |
+          100 * k8s_node_filesystem_available_bytes / k8s_node_filesystem_capacity_bytes < 15
+        for: 15m
+        labels: { severity: page }
+        annotations:
+          summary: "Node filesystem below 15% free"
+          description: >-
+            The node disk is filling. Below the eviction floor kubelet starts
+            evicting pods with almost no warning (eviction-hard is pinned at 2%).
+            Reclaim with `docker builder prune -af`, `docker image prune -a`, and
+            `crictl rmi --prune` inside the node; a local registry also never
+            garbage-collects on its own (`registry garbage-collect`).
+      # Predictive: catches steady growth that a threshold only reports once it is
+      # already an incident. Retention-driven growth (Prometheus TSDB, Loki
+      # chunks, Tempo blocks) is exactly this shape — slow, monotonic, and
+      # invisible until the cliff.
+      - alert: NodeDiskSpaceFillingUp
+        expr: |
+          predict_linear(k8s_node_filesystem_available_bytes[6h], 24 * 3600) < 0
+        for: 1h
+        labels: { severity: warn }
+        annotations:
+          summary: "Node filesystem predicted to fill within 24h"
+          description: >-
+            Extrapolating the last 6h of free space, this filesystem runs out
+            inside a day. Usually retention or image churn rather than a leak —
+            check Prometheus/Loki/Tempo retention and image GC before adding disk.
+
+  - name: capacity.saturation
+    rules:
+      - alert: NodeMemoryPressure
+        expr: |
+          100 * (1 - k8s_node_memory_available_bytes / (k8s_node_memory_available_bytes + k8s_node_memory_usage_bytes)) > 90
+        for: 15m
+        labels: { severity: page }
+        annotations:
+          summary: "Node memory above 90% used"
+          description: >-
+            Real memory saturation, not a requests problem. The next allocation
+            spike OOM-kills whichever container is over its request — check the
+            Applications dashboard for a workload whose usage has diverged from
+            its limit.
+
+  - name: capacity.scheduler
+    rules:
+      # requests > allocatable means the NEXT pod cannot be scheduled, regardless
+      # of how idle the hardware looks. Named separately from saturation because
+      # the remedy is different: lower requests or add a node, not tune the app.
+      - alert: ClusterCPURequestsCommitted
+        expr: |
+          100 * sum(k8s_container_cpu_request) / sum(k8s_node_allocatable_cpu) > 85
+        for: 30m
+        labels: { severity: warn }
+        annotations:
+          summary: "CPU requests at {{ $value | printf \"%.0f\" }}% of cluster allocatable"
+          description: >-
+            The scheduler is close to refusing new pods even if real CPU use is
+            low. Adding a replica or a service will start failing to place before
+            anything looks busy.
+      - alert: ClusterMemoryRequestsCommitted
+        expr: |
+          100 * sum(k8s_container_memory_request_bytes) / sum(k8s_node_allocatable_memory_bytes) > 85
+        for: 30m
+        labels: { severity: warn }
+        annotations:
+          summary: "Memory requests at {{ $value | printf \"%.0f\" }}% of cluster allocatable"
+          description: >-
+            As above, for memory. This is the number to size the next node
+            against — not current usage, which understates what the scheduler
+            has already promised.

@@ -1,0 +1,271 @@
+# Cluster-state metrics collector (ADR-0025 follow-up) — a 1-replica Deployment
+# running ONLY the k8s_cluster receiver, which watches the Kubernetes API and
+# emits desired/observed state as OTLP metrics: deployment desired vs available
+# replicas, container restart counts, and container CPU/memory limits in real
+# bytes/cores (what lets the Applications dashboard show used-vs-limit and the
+# workload-health alerts fire on missing replicas).
+#
+# Why not fold this into the otel-collector DaemonSet: k8s_cluster is a
+# CLUSTER-scoped watch — inside the DaemonSet every node's agent would emit an
+# identical full copy of the cluster state (N nodes → N duplicate series). It
+# needs exactly one instance, hence this hand-written singleton, following the
+# same pattern as prometheus.yaml/alloy.yaml (the vendored collector subchart
+# cannot be instantiated twice without a `dependencies:` block, which Chart.yaml
+# deliberately avoids — see the offline-rendering note there).
+#
+# Deliberately NOT a Headlamp replacement: live pod status / events / drill-down
+# stays in Headlamp. This exists for what a live UI cannot do — history,
+# alerting, and joining limits next to usage on the dashboards.
+#
+# No new NetworkPolicy: the baseline policy already allows platform pods
+# API-server egress (same as Alloy's pod discovery) and intra-namespace egress
+# for the OTLP push to Prometheus.
+{{- $oc := .Values.otelCluster }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-cluster
+  labels: { app.kubernetes.io/name: otel-cluster, app.kubernetes.io/part-of: observability }
+---
+# Cluster-scoped read-only watch on the objects the k8s_cluster receiver reports
+# on, plus what the k8sattributes processor needs to resolve pods → workloads
+# (pods, namespaces, replicasets). Name is prefixed to avoid colliding with the
+# DaemonSet collector's ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: observability-otel-cluster
+  labels: { app.kubernetes.io/name: otel-cluster, app.kubernetes.io/part-of: observability }
+rules:
+  - apiGroups: [""]
+    resources:
+      - namespaces
+      - nodes
+      - pods
+      - pods/status
+      - replicationcontrollers
+      - replicationcontrollers/status
+      - resourcequotas
+      - services
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: observability-otel-cluster
+  labels: { app.kubernetes.io/name: otel-cluster, app.kubernetes.io/part-of: observability }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: observability-otel-cluster
+subjects:
+  - kind: ServiceAccount
+    name: otel-cluster
+    namespace: {{ .Release.Namespace }}
+---
+{{/* Config in a define so the Deployment stamps checksum/config and rolls on
+     config edits — same pattern (and same reason) as prometheus.yaml. */}}
+{{- define "observability.otelCluster.config" }}
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    receivers:
+      k8s_cluster:
+        auth_type: serviceAccount
+        collection_interval: 30s
+        # Node allocatable — the denominator for "how close is the cluster to
+        # full?". This is a DIFFERENT question from real utilisation, and it is
+        # usually the one that bites first: the scheduler admits pods against
+        # sum(requests) vs allocatable, so a cluster can refuse new pods while
+        # actual CPU sits at 5% (measured here: 1.11 cores requested against 0.55
+        # in use). kubeletstats gives the usage side; nothing was emitting the
+        # capacity side, so an overcommit alert was impossible to express.
+        #
+        # ephemeral-storage is included on purpose: it is the node filesystem the
+        # kubelet evicts on, and this cluster deliberately pins eviction-hard to
+        # 2% (scripts/cluster-ensure.sh), which means kubelet gives almost no
+        # warning of its own.
+        allocatable_types_to_report: [cpu, memory, ephemeral-storage, storage, pods]
+      # Platform-component exporters (ADR-0025 follow-up): postgres (the CNPG
+      # instance manager's built-in exporter on :9187) and the Temporal server
+      # roles (:9090) already publish Prometheus metrics — this scrapes what
+      # exists rather than instrumenting anything. Lives HERE and not in the
+      # DaemonSet for the same reason k8s_cluster does: these are cluster-scoped
+      # targets, and N node agents would scrape N duplicate copies. Prometheus
+      # itself still scrapes nothing (ADR-0011) — this re-exports over OTLP.
+      # Discovery is label-selected pods, with a keep on the container port
+      # NAMED `metrics` — that is what skips temporal-web/admintools (no such
+      # port) and pins the exporter port on multi-port pods. The prometheus
+      # receiver sets service.name from the job name, so these series land as
+      # service_name="postgres"/"temporal" — the identity the dashboards and
+      # the Loki/kubeletstats signals already agree on.
+      prometheus/exporters:
+        config:
+          scrape_configs:
+            - job_name: postgres
+              scrape_interval: 30s
+              kubernetes_sd_configs:
+                - role: pod
+                  namespaces: { names: [{{ .Release.Namespace }}] }
+                  selectors:
+                    - role: pod
+                      label: "cnpg.io/cluster=postgres"
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_container_port_name]
+                  action: keep
+                  regex: metrics
+            - job_name: temporal
+              scrape_interval: 30s
+              kubernetes_sd_configs:
+                - role: pod
+                  namespaces: { names: [{{ .Release.Namespace }}] }
+                  selectors:
+                    - role: pod
+                      label: "app.kubernetes.io/name=temporal"
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_container_port_name]
+                  action: keep
+                  regex: metrics
+    processors:
+      # Same workload-identity mapping the DaemonSet's kubernetesAttributes
+      # preset applies: associate pod-scoped resources by k8s.pod.uid and derive
+      # service.name/service.namespace from the pod's app.kubernetes.io/* labels
+      # — so these series land in Prometheus with the SAME promoted
+      # service_name/service_namespace labels every dashboard groups by, and
+      # service.instance.id keeps per-pod series distinct after promotion.
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        pod_association:
+          - sources:
+              - { from: resource_attribute, name: k8s.pod.uid }
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.deployment.name
+            - service.namespace
+            - service.name
+            - service.instance.id
+      # Deployment/statefulset-scoped resources (k8s.deployment.desired/available)
+      # have no pod for k8sattributes to associate, so fill service.name/namespace
+      # from the workload identity itself. This works because the template's
+      # convention names each Deployment after its service (app.kubernetes.io/name);
+      # `where … == nil` keeps it a fallback — pod-scoped resources already
+      # labelled above pass through untouched.
+      transform/workload_identity:
+        metric_statements:
+          - context: resource
+            statements:
+              - set(attributes["service.name"], attributes["k8s.deployment.name"]) where attributes["service.name"] == nil and attributes["k8s.deployment.name"] != nil
+              - set(attributes["service.name"], attributes["k8s.statefulset.name"]) where attributes["service.name"] == nil and attributes["k8s.statefulset.name"] != nil
+              - set(attributes["service.namespace"], attributes["k8s.namespace.name"]) where attributes["service.namespace"] == nil and attributes["k8s.namespace.name"] != nil
+              # Deployment names carry a ROLE suffix the pod-label identity does
+              # not: repo services deploy as <service>-server/<service>-worker
+              # (both pods label app.kubernetes.io/name=<service>), and the
+              # Temporal chart's roles all label name=temporal. Without this
+              # strip the deployment-scoped series (desired/available) land as
+              # orders-server/orders-worker/temporal-frontend/… — entities that
+              # exist NOWHERE else, splitting each workload into ghost rows.
+              # Per-deployment granularity is NOT lost: k8s.deployment.name is
+              # promoted to a label by Prometheus (promote_resource_attributes),
+              # which is also what keeps the merged series distinct.
+              - replace_pattern(attributes["service.name"], "-(server|worker|frontend|history|matching|web|admintools)$$", "") where attributes["k8s.deployment.name"] != nil or attributes["k8s.statefulset.name"] != nil
+              # CNPG's pooler Deployment (postgres-pgbouncer-rw) joins the
+              # postgres identity its pods already resolve to via
+              # app.kubernetes.io/instance.
+              - replace_pattern(attributes["service.name"], "^postgres-pgbouncer-.*$$", "postgres") where attributes["k8s.deployment.name"] != nil
+      # Scraped-exporter fixups. service.namespace: the prometheus receiver only
+      # sets service.name (from the job), so fill the namespace half of the
+      # identity pair the dashboards filter on. delete_key service_name:
+      # Temporal's own metrics carry a `service_name` label (frontend/history/
+      # matching/worker) that would collide with the promoted resource label and
+      # fragment the workload identity — drop it; the same value survives in the
+      # `type` label for per-role breakdowns.
+      transform/exporters:
+        metric_statements:
+          - context: resource
+            statements:
+              - set(attributes["service.namespace"], "{{ .Release.Namespace }}") where attributes["service.namespace"] == nil
+          - context: datapoint
+            statements:
+              - delete_key(attributes, "service_name")
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      batch: {}
+    exporters:
+      # Same Prometheus OTLP push as the DaemonSet — keeps the "everything
+      # reaches Prometheus as an OTLP push" invariant (scrape_configs stays []).
+      otlphttp/prometheus:
+        endpoint: http://prometheus.platform.svc.cluster.local:9090/api/v1/otlp
+    service:
+      extensions: [health_check]
+      pipelines:
+        metrics:
+          receivers: [k8s_cluster]
+          processors: [memory_limiter, k8sattributes, transform/workload_identity, batch]
+          exporters: [otlphttp/prometheus]
+        # Separate pipeline: scraped series must NOT pass k8sattributes /
+        # transform/workload_identity (their identity comes from the scrape job,
+        # not pod association) and the k8s_cluster series must not lose their
+        # datapoint attributes to delete_key.
+        metrics/exporters:
+          receivers: [prometheus/exporters]
+          processors: [memory_limiter, transform/exporters, batch]
+          exporters: [otlphttp/prometheus]
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-cluster
+  labels: { app.kubernetes.io/name: otel-cluster, app.kubernetes.io/part-of: observability }
+data:
+  config.yaml: |
+    {{- include "observability.otelCluster.config" . }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-cluster
+  labels: { app.kubernetes.io/name: otel-cluster, app.kubernetes.io/part-of: observability }
+spec:
+  # MUST stay 1: the receiver is a cluster-wide watch; a second replica would
+  # double every series. If HA ever matters here, the receiver supports leader
+  # election — bump replicas only together with that config.
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: otel-cluster }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: otel-cluster }
+      # Roll on config change — the collector only reads config at startup.
+      annotations:
+        checksum/config: {{ include "observability.otelCluster.config" . | sha256sum }}
+    spec:
+      serviceAccountName: otel-cluster
+      containers:
+        - name: otel-collector
+          image: {{ $oc.image }}
+          args:
+            - --config=/etc/otelcol/config.yaml
+          ports:
+            - { name: health, containerPort: 13133 }
+          readinessProbe: { httpGet: { path: /, port: health }, initialDelaySeconds: 10 }
+          livenessProbe:  { httpGet: { path: /, port: health }, initialDelaySeconds: 30, periodSeconds: 30 }
+          resources: {{- toYaml $oc.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/otelcol }
+      volumes:
+        - name: config
+          configMap: { name: otel-cluster }
