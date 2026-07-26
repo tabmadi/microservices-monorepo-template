@@ -29,36 +29,107 @@ spec:
       toPorts:
         - ports: [{ port: "9090", protocol: TCP }]
   egress:
-    # Stale ring members. Temporal records every server host in the
-    # `cluster_membership` Postgres table with `record_expiry = last_heartbeat +
-    # 48h` — a hardcoded server constant with no dynamic-config override (checked
-    # against the 1.31.1 binary's config table). Every role keeps gossiping to
-    # every row until it expires, so for TWO DAYS after any restart the four roles
-    # dial the IPs of pods that no longer exist.
+    # Stale ring members — dead peer IPs that no longer belong to any pod.
     #
-    # Those addresses have no Cilium identity, so the ingress rule above and the
-    # baseline's intra-namespace egress — both identity-based — cannot match them
-    # and the SYNs are denied. Measured on this cluster: ~18 drops/min, sustained,
-    # against 13 dead rows and 4 live ones, which is what kept PolicyDropsDetected
-    # firing indefinitely after a temporal rollout.
+    # Where they come from (temporal 1.31.1, common/membership/ringpop/monitor.go):
+    # at startup each role queries `cluster_membership` for hosts that heartbeated
+    # within `healthyHostLastHeartbeatCutoff` = 20 SECONDS, then freezes that list
+    # into `statichosts.New(hostPorts...)` as ringpop's discover provider. The list
+    # is never refetched. Ringpop's partition healer then re-dials every entry in
+    # it that is not currently alive, every ~30s, for the LIFETIME OF THE PROCESS.
     #
-    # This allow does not create reachability that the policy did not already
-    # intend: the same ports are already open between live temporal pods. It only
-    # restates the intent in terms Cilium can still evaluate once the peer is
-    # gone, so a doomed connection fails as "connection refused" rather than as a
-    # policy drop. The ports are the membership (69xx) and RPC (72xx) pairs the
-    # ingress rule lists, and nothing else listens on them.
+    # So a rolling update poisons the list permanently: `maxSurge` overlaps old and
+    # new pods, the outgoing pods are still heartbeating well inside the 20s
+    # window, and their IPs are captured by the incoming ones. Measured here: one
+    # rollout left four dead peers dialed at 6.7 drops/min, continuously, for the
+    # 10h the pods had been up. It also accumulates — every later restart of one
+    # role turns that role's old IP into a permanent target in the other three.
+    # `record_expiry = last_heartbeat + 48h` governs how long rows LINGER in the
+    # table; it does not drive any of this, because the 20s cutoff means those rows
+    # are never handed to a bootstrapping pod. Pruning the table changes nothing.
+    #
+    # Nothing on the temporal side can prevent it: `ringpop.New()` gets only a
+    # channel and an address resolver, and the whole `config.Membership` struct is
+    # `maxJoinDuration` + `broadcastAddress`. There is no healer knob.
+    #
+    # An IP with no live pod has no Cilium identity, so the identity-based rules
+    # above cannot match it and the SYN is denied. This allow restates the intent
+    # in terms Cilium can still evaluate once the peer is gone, so a doomed
+    # connection fails as "connection refused" rather than as a policy drop. It
+    # grants no reachability the policy did not already intend — the same ports are
+    # already open between live temporal pods.
+    #
+    # Side effect worth knowing before someone re-investigates it: `toCIDR` mints a
+    # local CIDR identity (`cidr:<podCIDR>` + `reserved:world`), so Hubble UI draws
+    # these as temporal → "World" on 6933-6939. That is this rule, not egress to
+    # the internet. See temporal-stale-peer-ingress below for the other half.
     - toCIDR: [{{ .Values.podCIDR | quote }}]
       toPorts:
         - ports:
-            - { port: "6933", protocol: TCP }
-            - { port: "6934", protocol: TCP }
-            - { port: "6935", protocol: TCP }
-            - { port: "6939", protocol: TCP }
-            - { port: "7233", protocol: TCP }
-            - { port: "7234", protocol: TCP }
-            - { port: "7235", protocol: TCP }
-            - { port: "7239", protocol: TCP }
+            - { port: "6933", endPort: 6939, protocol: TCP }
+            - { port: "7233", endPort: 7239, protocol: TCP }
+---
+## The other half of the stale-peer problem: a dead peer IP that has since been
+## RECYCLED onto a live pod.
+##
+## The egress rule above legalises temporal's side of a doomed gossip dial. It can
+## do nothing about the destination, and Kubernetes reuses pod IPs: measured here,
+## a frontend IP captured into the static bootstrap lists at 22:23 was handed to a
+## `payment-worker` pod 90 minutes later. From then on every ~30s heal attempt hit
+## that pod's ingress policy — which admits only its server and admin ports — and
+## 100% of the cluster's POLICY_DENIED drops were temporal → payment-worker:6933,
+## firing PolicyDropsDetected indefinitely. The versioned worker deployments
+## (ADR-0006) make this likelier, not rarer: every build ID mints a Deployment and
+## retires another, so pod IPs churn constantly.
+##
+## Any pod can inherit such an IP, so the selector is every endpoint in the
+## namespace — a CNP is namespaced, so this is `platform`, not cluster-wide. The
+## allow is scoped as tightly as the tooling permits: one source identity, one port
+## block, one namespace.
+##
+## READ THIS BEFORE EDITING THE SELECTOR. Because this rule has an ingress section
+## and selects every endpoint, it switches ingress policy ENFORCEMENT on for pods
+## that no other policy selected. Cilium enforces ingress on an endpoint only once
+## some rule gives it ingress; before this rule, seven platform workloads (the CNPG
+## poolers, alloy, otel-cluster, cert-manager, cainjector, sops-operator and the
+## kratos courier) reported `policy-enabled: egress` and accepted any traffic that
+## could route to them. Applying this rule cost `otel-cluster → pgbouncer:9127`
+## immediately — 88 POLICY_DENIED/min — because nothing had ever granted that
+## scrape; 10-datastores.yaml now does (`postgres-pooler`). The rest were reachable
+## only from `reserved:host`, which Cilium allows independently, so they were
+## unaffected. If a future workload lands in the namespace with an ingress caller
+## and no policy of its own, this rule is what will break it, and
+## `cilium-dbg endpoint list -o json | grep policy-enabled` is how you see it
+## coming. Closing that hole is a feature of this rule, not a side effect — but it
+## has to be closed deliberately, not discovered in production.
+##
+## Why an allow and not an alert exception. Cilium has no REJECT verdict, so the
+## only two ways to stop a permanent known-benign drop are to allow it or to
+## silence the alert. `hubble_drop_total` carries source, destination, protocol and
+## reason — NO PORT LABEL — so the narrowest possible alert exception is "ignore
+## temporal → any non-temporal pod", which would also swallow a real regression
+## like temporal being denied to Postgres. The policy rule can say "6933-6939
+## only"; the alert cannot. The allow is the more precise instrument, and keeping
+## PolicyDropsDetected meaningful is the point — it is the tripwire for silent
+## netpol regressions (ADR-0011), and an alert that is always firing is one that
+## has already been turned off.
+##
+## Membership ports only. Ringpop's healer dials the MEMBERSHIP port; RPC (72xx)
+## only ever goes to a resolved live ring member, and no drop on those was ever
+## observed. 6933-6939 is temporal's membership block (frontend 6933, history 6934,
+## matching 6935, internal-frontend 6936, worker 6939), so the range stays correct
+## if a further role is enabled. Nothing else in the namespace listens there.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: temporal-stale-peer-ingress
+spec:
+  endpointSelector: {}
+  ingress:
+    - fromEndpoints:
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: temporal }
+      toPorts:
+        - ports: [{ port: "6933", endPort: 6939, protocol: TCP }]
 ---
 ## Frontend RPC (7233) is the client entrypoint: app workers, temporal-web and
 ## admintools call it. Any platform pod may reach the frontend on 7233 only.

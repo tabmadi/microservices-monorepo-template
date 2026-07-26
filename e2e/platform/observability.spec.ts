@@ -219,6 +219,16 @@ test.describe("service observability POC (ADR-0025)", () => {
   // container parser, and the k8sattributes service.name inference the dashboard
   // filters on. grafana/loki/tempo appear as "observability": service.name
   // inference prefers app.kubernetes.io/instance (the Helm release) over /name.
+  //
+  // The collector agent itself is deliberately NOT in this list. Its filelog
+  // receiver excludes its own pod
+  // (`/var/log/pods/platform_otel-collector*_*/opentelemetry-collector/*.log`,
+  // infra/helm/platform/observability) so that a log line about reading a log file
+  // does not become a log file to read — the standard feedback-loop guard. Asserting
+  // "otel-collector" here made this test permanently red: the label cannot exist by
+  // construction, and Loki confirms it is absent over any window while every other
+  // name in this list is present. Agent health is covered by its metrics, not by its
+  // own stdout.
   test("platform workloads that only log to stdout reach Loki (filelog)", async () => {
     const ds = await ctx.get(`${opsURL("grafana")}/api/datasources/name/Loki`);
     expect(ds.ok(), "Loki datasource is provisioned").toBeTruthy();
@@ -230,7 +240,7 @@ test.describe("service observability POC (ADR-0025)", () => {
     expect(res.ok(), "Loki label API answers via the Grafana proxy").toBeTruthy();
     const services: string[] = (await res.json()).data ?? [];
     expect(services, "stdout-only platform workloads have logs in Loki").toEqual(
-      expect.arrayContaining(["postgres", "temporal", "lowdefy", "observability", "otel-collector"]),
+      expect.arrayContaining(["postgres", "temporal", "lowdefy", "observability", "otel-cluster"]),
     );
   });
 });

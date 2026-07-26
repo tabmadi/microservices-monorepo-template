@@ -14,6 +14,51 @@ temporal:
     additionalEnv:
       - name: TEMPORAL_VERSION_CHECK_DISABLED
         value: "true"
+    # Never overlap an old and a new pod of the same role. At startup each role
+    # freezes the set of peers that heartbeated in the last 20s into ringpop's
+    # discover provider and re-dials the dead ones forever (the long version is in
+    # network-policies/templates/20-temporal.yaml). With the chart default
+    # maxSurge 25%, which rounds up to 1 on a single-replica Deployment, the
+    # incoming pod always captures the outgoing one and inherits a permanent dead
+    # peer. maxSurge 0 costs a few seconds of unavailability per role on rollout
+    # and stops a rollout minting stale peers at all.
+    #
+    # This is a mitigation, not the fix: an eviction, OOM kill or node reboot
+    # replaces a pod without consulting the strategy, so stale peers can still
+    # appear. temporal-stale-peer-ingress is what makes them harmless.
+    #
+    # RESET RUNBOOK — clearing peers already accumulated. Nothing resets an
+    # in-process list but a restart of the process holding it, and every role has to
+    # go at once or the survivors re-seed the newcomers. Scaling to 0 does not work
+    # under GitOps: ArgoCD self-heals the replica count back to 1 inside the wait.
+    # What works, verified on the local cluster:
+    #
+    #   kubectl -n platform delete pod --force --grace-period=0 \
+    #     -l app.kubernetes.io/name=temporal
+    #   kubectl -n platform exec postgres-1 -c postgres -- \
+    #     psql -U postgres -d temporal -c 'delete from cluster_membership;'
+    #
+    # `--force --grace-period=0` matters: a gracefully terminating pod keeps
+    # heartbeating, and a heartbeat inside the 20s window is exactly what the
+    # replacements would capture. Clearing `cluster_membership` immediately after is
+    # what closes the race — the rows are ephemeral discovery state that the
+    # heartbeat loop rebuilds within ~15s, not durable workflow data. Verify by
+    # grepping each role's one-shot startup line for live IPs only:
+    # `kubectl -n platform logs deploy/temporal-frontend | grep bootstrap-hostports`.
+    #
+    # TWO THINGS BITE DURING THE WINDOW, both observed:
+    #   - SDK workers may not recover from the abrupt frontend termination. After a
+    #     reset, check each worker logged "Started Worker" since; if one is silent
+    #     while the others took work, restart that worker pod.
+    #   - Registration fails while Temporal is cold. Kratos' /identity-created
+    #     web_hook is blocking with a ~3s timeout (infra/auth/kratos), and a
+    #     cold-start StartWorkflow exceeds it, so sign-ups 500 until the task queues
+    #     warm. Do resets when a failed sign-up is acceptable.
+    deploymentStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 0
+        maxUnavailable: 1
     config:
       # Chart 1.x persistence schema (UPGRADING.md): stores live under
       # persistence.datastores.<name> and are selected by defaultStore /

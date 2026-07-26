@@ -42,6 +42,58 @@ spec:
       toPorts:
         - ports: [{ port: "9187", protocol: TCP }]
 ---
+## The CNPG poolers (`postgres-pgbouncer-rw`, ADR-0007 transaction mode) — the same
+## database behind a connection pooler, and so the same caller list as the Cluster
+## above. They are a SEPARATE policy because the `postgres` rule selects
+## `app.kubernetes.io/component: database` and the pooler pods carry
+## `component: pooler`; nothing else in this chart matched them.
+##
+## Until this rule existed the pooler pods had NO ingress policy selecting them at
+## all, which does not mean "deny" — it means Cilium never switched ingress
+## enforcement on for that endpoint, and the pods were reachable by anything that
+## could route to them, on 5432 as well as the metrics port. Verified with
+## `cilium-dbg endpoint list -o json`: the pooler endpoints reported
+## `policy-enabled: egress` where every other platform workload reported `both`.
+## The namespace-wide default-deny the baseline advertises did not cover them.
+##
+## The trap this leaves for the next person: adding ANY policy with an ingress
+## section that also selects these pods flips enforcement on for them, and every
+## caller not listed here starts getting dropped. That is exactly how this rule was
+## found — temporal-stale-peer-ingress (20-temporal.yaml) selects the whole
+## namespace, and the moment it was applied `otel-cluster → pgbouncer:9127` went
+## from silently-working to 88 POLICY_DENIED/min. Keep this caller list complete.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: postgres-pooler
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+      app.kubernetes.io/component: pooler
+  ingress:
+    # Same schema-owning callers as the Cluster: the pooler is a front door to the
+    # same database, so a caller allowed on one and denied on the other would only
+    # be a bug waiting for the first service to switch its DSN to the pooler.
+    - fromEndpoints:
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: kratos }
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: ory-kratos-courier }
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: openfga }
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: temporal }
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: catalog }
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: orders }
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: orgs }
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: payment }
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: pgweb }
+      toPorts:
+        - ports: [{ port: "5432", protocol: TCP }]
+    # otel-cluster scrapes pgbouncer's exporter on 9127 — the pooler connection and
+    # transaction metrics on the platform-components dashboard.
+    - fromEndpoints:
+        - matchLabels: { k8s:io.kubernetes.pod.namespace: platform, app.kubernetes.io/name: otel-cluster }
+      toPorts:
+        - ports: [{ port: "9127", protocol: TCP }]
+---
 ## OpenFGA — authorization store (HTTP API, port 8080). authz-server checks
 ## permissions; the openfga-seed job creates the store + writes the model and
 ## bootstrap grants at bring-up. Business services that authorize writes via the

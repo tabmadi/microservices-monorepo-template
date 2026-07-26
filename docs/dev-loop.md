@@ -245,8 +245,8 @@ through `infra/local/edge-auth.yaml`.
 
 **There is no seeded user** — Kratos starts with an empty identity store. Create
 one at <https://dev.localtest.me:8443/auth/register> with any email and a password
-that clears Kratos' defaults (≥ 8 chars and not a known-breached password — it runs
-a HaveIBeenPwned check, so `password123` is rejected); then log in with it. Email
+that clears the policy (≥ 12 chars and not similar to the email, so `password123`
+is rejected); then log in with it. Email
 verification is configured but the local SMTP sink isn't wired up, so verification
 mail isn't delivered — login doesn't require it.
 

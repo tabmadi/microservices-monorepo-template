@@ -9,9 +9,9 @@
 ## Loki and Tempo push chunks/traces to the bucket (ADR-0003) and so need egress on
 ## 443. Prometheus keeps a local TSDB and needs none.
 ##
-## Note this is no longer the only world egress on the platform: kratos reaches
-## api.pwnedpasswords.com in EVERY env (30-ory.yaml), because a breach check that
-## is off in one env is a weaker password policy in that env, not a smaller one.
+## These rules are the platform's only world egress. Kratos briefly had one too,
+## for the HaveIBeenPwned breach check; ADR-0010 turned that check off by default
+## and 30-ory.yaml carries the recipe for putting it back per env.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:

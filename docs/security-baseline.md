@@ -36,7 +36,7 @@ Two tiers behind one Traefik edge, isolated at the browser by **separate origins
 | No surface authorized by session alone | ops: Oathkeeper `remote_json` → `services/authz` (`group:operator` + `dashboard:<tool>#view` + AAL2); product `/admin`: RSC `Checker`/role gate; `/api`: in-service `Checker` | `scripts/lint-authorizer.sh`; `services/authz` tests; `fga model test` |
 | Least privilege (per-tool grants) | OpenFGA `group`/`dashboard` schema + relations | `scripts/validate-openfga.sh` (13 assertions) |
 | Operator MFA / AAL2 | Kratos TOTP + WebAuthn enabled; AAL2 required at the ops edge (`services/authz`); enrolment UI via `KratosFlow` | authz unit tests (aal2 deny); manual enrolment |
-| Strong passwords + breach check | Kratos `password` method: HIBP on, `min_password_length: 12` (`infra/auth/kratos/values.yaml`) | rendered Kratos config |
+| Strong passwords | Kratos `password` method: `min_password_length: 12` + identifier-similarity check (`infra/auth/kratos/values.yaml`). HIBP breach check is off by default and enabled per env ([ADR-0010](adr/0010-auth.md)) | rendered Kratos config |
 | Session lifetime + step-up | `session.lifespan: 168h`; `privileged_session_max_age: 15m` on settings/MFA changes | rendered Kratos config |
 | Account recovery (enumeration-resistant) | Kratos recovery/verification `use: code` | rendered Kratos config |
 | Managed secrets (no plaintext) | SOPS-managed `kratos-secrets` (cookie/cipher/system/dsn) via `secret.enabled:false` + existingSecret; same mechanism for every credential ([ADR-0005](adr/0005-secrets.md)) | rendered deployment secretKeyRefs; `grep` for plaintext |

@@ -70,14 +70,27 @@ kratos:
             required_aal: highest_available
         # Authentication methods (ADR-0010). password is the first factor; TOTP and
         # WebAuthn/passkeys are the operator second factor (AAL2 is enforced on the
-        # ops tier by services/authz, not forced on B2C product users here). HIBP +
-        # a length policy harden the password method in every deployed env.
+        # ops tier by services/authz, not forced on B2C product users here).
+        #
+        # The breach check is OFF by default (ADR-0010). It requires egress to
+        # api.pwnedpasswords.com on every password operation, which a platform
+        # deployed on a closed company network cannot reach — and Kratos'
+        # `ignore_network_errors` defaults to true, so an unreachable check does not
+        # fail the flow, it silently accepts the password. A control that is on in
+        # the manifest and off on the wire is worse than one that is off in both.
+        # The password method is hardened by length + identifier similarity instead.
+        #
+        # To turn it back on in an env that has the egress, set
+        # `haveibeenpwned_enabled: true` and `max_breaches: 0` here, and add the
+        # matching toFQDNs allow to 30-ory.yaml (see the note there). A closed
+        # network can point `haveibeenpwned_host` at a self-hosted k-anonymity API
+        # instead; Kratos requires that host to serve TLS from a CA the container
+        # already trusts, because it has no setting for a custom CA chain.
         methods:
           password:
             enabled: true
             config:
-              haveibeenpwned_enabled: true
-              max_breaches: 0
+              haveibeenpwned_enabled: false
               min_password_length: 12
               identifier_similarity_check_enabled: true
           totp:
