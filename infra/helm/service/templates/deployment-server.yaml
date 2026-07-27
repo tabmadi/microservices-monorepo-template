@@ -15,6 +15,10 @@ spec:
         component: server
     spec:
       serviceAccountName: {{ include "service.fullname" . }}
+      # ADR-0020 eviction order. Declared explicitly (not inherited) because the
+      # PriorityClass globalDefault is platform-critical — product workloads must sit
+      # BELOW the platform they depend on, so this is the one place that opts down.
+      priorityClassName: {{ .Values.priorityClassName }}
       securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- if .Values.migrations.enabled }}
       initContainers:

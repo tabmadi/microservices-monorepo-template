@@ -14,6 +14,49 @@ temporal:
     additionalEnv:
       - name: TEMPORAL_VERSION_CHECK_DISABLED
         value: "true"
+    # ADR-0020, sized from measurement (2026-07-26, ADR-0027 checkout load @40 VUs).
+    # Baseline for every role; the per-role blocks below override where measurement
+    # says the roles differ, which they do by an order of magnitude.
+    #
+    # NOTE this chart (temporal-1.4.0) exposes no `priorityClassName` at all, per role
+    # or globally. Temporal therefore inherits `platform-critical` from the
+    # PriorityClass globalDefault rather than declaring it — see
+    # infra/helm/platform/resource-governance/values.yaml for why the default was
+    # pointed that way instead of at `product`.
+    resources:
+      requests: { cpu: "100m", memory: "192Mi" }
+      limits:   { memory: "512Mi" }
+    frontend:
+      # Measured: 101Mi, 375m CPU peak. Every workflow start and query enters here,
+      # so the CPU is bursty and deliberately unlimited (ADR-0020).
+      resources:
+        requests: { cpu: "100m", memory: "192Mi" }
+        limits:   { memory: "512Mi" }
+    history:
+      # THE HEAVIEST CPU CONSUMER IN THE CLUSTER. Measured 2121m — 2.1 cores — and
+      # 647Mi during a 40-VU checkout run, against roughly 20m at rest. It owns
+      # workflow mutable state and shard ownership, so every workflow transition is
+      # its work.
+      #
+      # This is the single strongest argument for ADR-0020's no-CPU-limits rule: a
+      # naive 500m limit here (the value our service chart used to carry) would
+      # throttle it to a quarter of its measured need and surface as checkout
+      # settle-time collapsing, with no OOM and no error to point at. Verify with
+      # `mise run perf:stress` and the load-test dashboard's settle panel.
+      resources:
+        requests: { cpu: "500m", memory: "768Mi" }
+        limits:   { memory: "1536Mi" }
+    matching:
+      # Measured: 102Mi, 372m CPU. Task-queue dispatch — bursty like frontend.
+      resources:
+        requests: { cpu: "100m", memory: "192Mi" }
+        limits:   { memory: "512Mi" }
+    worker:
+      # Temporal's OWN internal worker (archival, scanners), not our services'
+      # workers. Measured: 148Mi, 40m CPU.
+      resources:
+        requests: { cpu: "50m", memory: "192Mi" }
+        limits:   { memory: "512Mi" }
     # Never overlap an old and a new pod of the same role. At startup each role
     # freezes the set of peers that heartbeated in the last 20s into ringpop's
     # discover provider and re-dials the dead ones forever (the long version is in

@@ -1,0 +1,699 @@
+{
+  "title": "Load test",
+  "uid": "load-test",
+  "schemaVersion": 39,
+  "tags": ["perf", "k6", "capacity"],
+  "description": "Correlates a k6 load run (ADR-0027) against what it cost the cluster. Deliberately OUTSIDE the L1-L3 triage funnel of ADR-0026: that funnel diagnoses an unplanned incident, this reads a planned experiment. Left column of every row is what the generator saw; right is what the platform paid. Empty unless a run is in progress or the time range covers one.",
+  "links": [
+    {
+      "title": "◀ Applications",
+      "type": "link",
+      "url": "/d/applications/applications?${__url_time_range}",
+      "icon": "external link"
+    },
+    {
+      "title": "Service detail",
+      "type": "link",
+      "url": "/d/service-detail/service-detail?${__url_time_range}",
+      "icon": "external link"
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "scenario",
+        "label": "Scenario",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(k6_http_reqs_total, scenario)",
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(k8s_pod_cpu_usage, service_namespace)",
+        "includeAll": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "description": "Defaults to All, unlike the Applications dashboard's `platform`. The edge — Traefik and Cilium — lives in kube-system, and on the read path it outranks every business service on CPU. Scoping this to `platform` by default would hide the single most useful row in the cost table below."
+      },
+      {
+        "name": "service",
+        "label": "Services under test",
+        "type": "query",
+        "datasource": "Prometheus",
+        "query": "label_values(k8s_pod_cpu_usage{service_namespace=\"platform\"}, service_name)",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": ["catalog", "orders", "payment"],
+          "value": ["catalog", "orders", "payment"]
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "The run — what the generator saw",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Throughput",
+      "description": "Requests per second the generator actually achieved. Compare against the VU count below: if VUs climb while this stays flat, the system under test is the bottleneck — that is the knee a stress run exists to find.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 5, "w": 5, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 1,
+          "color": { "mode": "fixed", "fixedColor": "blue" }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(k6_http_reqs_total{scenario=~\"$scenario\"}[$__rate_interval]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Error rate",
+      "description": "Share of requests k6 did not consider a success (expected_response=false). This is the generator's view, which includes connection failures the server never saw and therefore never counted in its own 5xx rate.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 5, "w": 5, "x": 5, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (sum(rate(k6_http_reqs_total{scenario=~\"$scenario\",expected_response=\"false\"}[$__rate_interval])) or vector(0)) / sum(rate(k6_http_reqs_total{scenario=~\"$scenario\"}[$__rate_interval]))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "p95 latency",
+      "description": "95th percentile round-trip time as measured from the generator, so it includes edge routing and the Oathkeeper forward-auth hop — not just the service's own handler time.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 5, "w": 5, "x": 10, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "ms", "decimals": 0 } },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(k6_http_req_duration_milliseconds_bucket{scenario=~\"$scenario\"}[$__rate_interval])))"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Virtual users",
+      "description": "Concurrent VUs the profile is driving right now (perf/lib/config.js ramps these). The independent variable of the experiment.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 5, "w": 4, "x": 15, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "purple" }
+        }
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "targets": [{ "refId": "A", "expr": "max(k6_vus{scenario=~\"$scenario\"})" }]
+    },
+    {
+      "type": "stat",
+      "title": "Dropped iterations",
+      "description": "Iterations k6 could not start on time. NON-ZERO MEANS THE GENERATOR IS THE BOTTLENECK, not the platform — every number on this dashboard is then an understatement, and the run needs the k6-operator Scale swap (docs/operational-surface.md) before it can be believed.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 5, "w": 5, "x": 19, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(k6_dropped_iterations_total{scenario=~\"$scenario\"}[$__range])) or vector(0)"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Load over time",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Throughput and concurrency",
+      "description": "Requests/s per endpoint against the VU ramp. The shape to look for: throughput tracking VUs linearly, then flattening. The flattening point is the capacity knee.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "VUs" },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              { "id": "unit", "value": "short" },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [8, 4],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{endpoint}}",
+          "expr": "sum by (endpoint) (rate(k6_http_reqs_total{scenario=~\"$scenario\"}[$__rate_interval]))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "VUs",
+          "expr": "max(k6_vus{scenario=~\"$scenario\"})"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency percentiles by endpoint",
+      "description": "p50 / p95 / p99 per endpoint. Watch the SPREAD, not just p95: p99 pulling away from p50 while throughput is flat is queueing, and queueing is what saturation looks like before it looks like errors.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "fillOpacity": 0, "showPoints": "never" }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "p50 {{endpoint}}",
+          "expr": "histogram_quantile(0.50, sum by (le, endpoint) (rate(k6_http_req_duration_milliseconds_bucket{scenario=~\"$scenario\"}[$__rate_interval])))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "p95 {{endpoint}}",
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(k6_http_req_duration_milliseconds_bucket{scenario=~\"$scenario\"}[$__rate_interval])))"
+        },
+        {
+          "refId": "C",
+          "legendFormat": "p99 {{endpoint}}",
+          "expr": "histogram_quantile(0.99, sum by (le, endpoint) (rate(k6_http_req_duration_milliseconds_bucket{scenario=~\"$scenario\"}[$__rate_interval])))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Checkout saga — settle time and outcome",
+      "description": "The async half of the write path (ADR-0006). p95 settle is wall time from an accepted checkout to a terminal order, so it measures Temporal throughput, not API latency. The confirmed rate falling while the POST stays fast is the signature failure of an async system under load: the API happily accepts work the workers cannot keep up with. Empty for the browse scenario.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*rate.*"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              { "id": "max", "value": 1 },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "p95 settle",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(k6_checkout_settle_milliseconds_bucket[$__rate_interval])))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "p50 settle",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(k6_checkout_settle_milliseconds_bucket[$__rate_interval])))"
+        },
+        {
+          "refId": "C",
+          "legendFormat": "confirmed rate",
+          "expr": "(sum(rate(k6_checkout_confirmed_total{condition=\"nonzero\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(k6_checkout_confirmed_total[$__rate_interval])), 0.001)"
+        },
+        {
+          "refId": "D",
+          "legendFormat": "timeout rate",
+          "expr": "(sum(rate(k6_checkout_timeout_total{condition=\"nonzero\"}[$__rate_interval])) or vector(0)) / clamp_min(sum(rate(k6_checkout_timeout_total[$__rate_interval])), 0.001)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Server-side latency, for comparison",
+      "description": "The same requests as the platform's own instrumentation saw them (ADR-0011 http_server_request_duration_seconds). The GAP between this and the generator's p95 opposite is time spent in the edge, in TLS, and in the network — if the gap widens under load, Traefik or Oathkeeper is the constraint, not the service.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 0, "showPoints": "never" }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "p95 {{service_name}}",
+          "expr": "histogram_quantile(0.95, sum by (le, service_name) (rate(http_server_request_duration_seconds_bucket{service_name=~\"$service\"}[$__rate_interval])))"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "The bill — what the cluster paid for it",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 }
+    },
+    {
+      "type": "table",
+      "title": "Cost per workload over this window — sorted by peak CPU",
+      "description": "Every workload in the cluster, ranked by what this run cost it. Rows are per DEPLOYMENT or StatefulSet, not per service: `service_name` folds all six Temporal components into one row (and orders-server + orders-worker into another), which hides the finding — under checkout load the expensive workload is temporal-history specifically, at nearly 2 cores. The `workload` label is derived in PromQL as deployment name, else statefulset name, else the folded service_name. Peak comes before mean because peak is what you size for: a container is OOM-killed at its peak, not at its mean. Deliberately NOT filtered to the services under test — the interesting answer is usually a workload nobody was testing (measured under read load, the top two rows are Oathkeeper and Traefik, not catalog: the ingress + forward-auth hop costs roughly 3x the business logic behind it). No RED columns here on purpose: http.server metrics are labelled per service and cannot join to per-deployment rows — for req/s and errors per service use Overview or Applications. This complements the Applications dashboard rather than repeating it: that one answers 'how big is each workload right now', this one answers 'what did THIS experiment cost', over the selected range. IMPORTANT: this is working_set / container limit, computed here rather than read from kubeletstats' k8s_pod_memory_limit_utilization_ratio. That metric divides memory.USAGE by the limit, and usage includes reclaimable page cache — measured 2-3x overstatement across every pod (otel-cluster reported 97.9% against a real 58.0%). The OOM killer acts on the working set, so the working set is what a limit must be sized against. Only containers that declare a memory limit appear; a blank row is itself an ADR-0020 finding.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 24 },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "CPU peak", "desc": true }]
+      },
+      "fieldConfig": {
+        "defaults": { "decimals": 3 },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "CPU.*" },
+            "properties": [{ "id": "unit", "value": "none" }]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Memory peak"
+            },
+            "properties": [{ "id": "unit", "value": "bytes" }, { "id": "decimals", "value": 0 }]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mem % of limit"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              { "id": "max", "value": 1 },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.75
+                    },
+                    {
+                      "color": "red",
+                      "value": 0.9
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Restarts" },
+            "properties": [
+              { "id": "decimals", "value": 0 },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-text" }
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "expr": "max_over_time((sum by (workload) (label_replace(label_replace(label_replace(k8s_pod_cpu_usage{service_namespace=~\"$namespace\"}, \"workload\", \"$1\", \"service_name\", \"(.*)\"), \"workload\", \"$1\", \"k8s_deployment_name\", \"(.+)\"), \"workload\", \"$1\", \"k8s_statefulset_name\", \"(.+)\")))[$__range:15s])"
+        },
+        {
+          "refId": "B",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "expr": "avg_over_time((sum by (workload) (label_replace(label_replace(label_replace(k8s_pod_cpu_usage{service_namespace=~\"$namespace\"}, \"workload\", \"$1\", \"service_name\", \"(.*)\"), \"workload\", \"$1\", \"k8s_deployment_name\", \"(.+)\"), \"workload\", \"$1\", \"k8s_statefulset_name\", \"(.+)\")))[$__range:15s])"
+        },
+        {
+          "refId": "C",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "expr": "max_over_time((sum by (workload) (label_replace(label_replace(label_replace(k8s_pod_memory_working_set_bytes{service_namespace=~\"$namespace\"}, \"workload\", \"$1\", \"service_name\", \"(.*)\"), \"workload\", \"$1\", \"k8s_deployment_name\", \"(.+)\"), \"workload\", \"$1\", \"k8s_statefulset_name\", \"(.+)\")))[$__range:15s])"
+        },
+        {
+          "refId": "D",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "expr": "max_over_time((max by (workload) (label_replace(label_replace(label_replace(k8s_pod_memory_working_set_bytes{service_namespace=~\"$namespace\"} / on(instance) group_left k8s_container_memory_limit_bytes, \"workload\", \"$1\", \"service_name\", \"(.*)\"), \"workload\", \"$1\", \"k8s_deployment_name\", \"(.+)\"), \"workload\", \"$1\", \"k8s_statefulset_name\", \"(.+)\")))[$__range:15s])"
+        },
+        {
+          "refId": "E",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "expr": "sum by (workload) (label_replace(label_replace(label_replace(increase(k8s_container_restarts{service_namespace=~\"$namespace\"}[$__range]), \"workload\", \"$1\", \"service_name\", \"(.*)\"), \"workload\", \"$1\", \"k8s_deployment_name\", \"(.+)\"), \"workload\", \"$1\", \"k8s_statefulset_name\", \"(.+)\"))"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": { "byField": "workload", "mode": "outer" }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time 4": true,
+              "Time 5": true
+            },
+            "renameByName": {
+              "workload": "Workload",
+              "Value #A": "CPU peak",
+              "Value #B": "CPU mean",
+              "Value #C": "Memory peak",
+              "Value #D": "Mem % of limit",
+              "Value #E": "Restarts"
+            },
+            "indexByName": {
+              "workload": 0,
+              "Value #A": 1,
+              "Value #B": 2,
+              "Value #C": 3,
+              "Value #D": 4,
+              "Value #E": 5
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Pod CPU",
+      "description": "kubeletstats CPU per pod for the services under test. Read against the latency panels above: latency rising while CPU is flat means the constraint is not CPU (usually it is the connection pool or a lock).",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 35 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 3,
+          "custom": { "fillOpacity": 10, "showPoints": "never" }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{workload}}",
+          "expr": "sum by (workload) (label_replace(label_replace(label_replace(k8s_pod_cpu_usage{service_namespace=\"platform\",service_name=~\"$service\"}, \"workload\", \"$1\", \"service_name\", \"(.*)\"), \"workload\", \"$1\", \"k8s_deployment_name\", \"(.+)\"), \"workload\", \"$1\", \"k8s_statefulset_name\", \"(.+)\"))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Pod memory (working set)",
+      "description": "Memory that cannot be reclaimed under pressure — the number the OOM killer acts on. A line that climbs through a soak run and never comes back down is the leak signal.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 35 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "fillOpacity": 10, "showPoints": "never" }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{workload}}",
+          "expr": "sum by (workload) (label_replace(label_replace(label_replace(k8s_pod_memory_working_set_bytes{service_namespace=\"platform\",service_name=~\"$service\"}, \"workload\", \"$1\", \"service_name\", \"(.*)\"), \"workload\", \"$1\", \"k8s_deployment_name\", \"(.+)\"), \"workload\", \"$1\", \"k8s_statefulset_name\", \"(.+)\"))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory headroom against limit",
+      "description": "Fraction of each container's memory limit actually in use (ADR-0020). Crossing 1.0 is an OOM kill, so this is the panel that turns a load run into a sizing decision. IMPORTANT: this is working_set / container limit, computed here rather than read from kubeletstats' k8s_pod_memory_limit_utilization_ratio. That metric divides memory.USAGE by the limit, and usage includes reclaimable page cache — measured 2-3x overstatement across every pod (otel-cluster reported 97.9% against a real 58.0%). The OOM killer acts on the working set, so the working set is what a limit must be sized against. Only containers that declare a memory limit appear; a blank row is itself an ADR-0020 finding.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 35 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 1,
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.9
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{workload}}",
+          "expr": "max by (workload) (label_replace(label_replace(label_replace(k8s_pod_memory_working_set_bytes{service_namespace=\"platform\",service_name=~\"$service\"} / on(instance) group_left k8s_container_memory_limit_bytes, \"workload\", \"$1\", \"service_name\", \"(.*)\"), \"workload\", \"$1\", \"k8s_deployment_name\", \"(.+)\"), \"workload\", \"$1\", \"k8s_statefulset_name\", \"(.+)\"))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Node ceiling",
+      "description": "Whole-node CPU and memory. On the local tier the k6 generator ALSO runs on this host but outside the k3d node container, so it is not counted here — which is precisely why local numbers are a regression signal and not a capacity figure (ADR-0027).",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 43 },
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 10, "showPoints": "never" } },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "memory used"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              { "id": "unit", "value": "bytes" }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "CPU cores used",
+          "expr": "sum(k8s_node_cpu_usage)"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "memory used",
+          "expr": "sum(k8s_node_memory_working_set_bytes)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Data tier under load",
+      "description": "Postgres commit throughput and Temporal's schedule-to-start lag. Schedule-to-start climbing is the definitive Temporal saturation signal: tasks are queued and no worker has picked them up, which surfaces as slow checkouts long before any HTTP error.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 43 },
+      "fieldConfig": {
+        "defaults": { "custom": { "fillOpacity": 0, "showPoints": "never" } },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*schedule.*"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              { "id": "unit", "value": "s" }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "postgres txn/s",
+          "expr": "sum(rate(cnpg_pg_stat_database_xact_commit_total{service_name=\"postgres\"}[$__rate_interval]) + rate(cnpg_pg_stat_database_xact_rollback_total{service_name=\"postgres\"}[$__rate_interval]))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "temporal schedule→start p95",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(task_schedule_to_start_latency_bucket{service_name=\"temporal\"}[$__rate_interval])))"
+        }
+      ]
+    }
+  ]
+}

@@ -1,9 +1,9 @@
 # ADR-0018: Testing Strategy & End-to-End
 
 - **Status:** Accepted
-- **Date:** 2026-07-06
+- **Date:** 2026-07-26
 - **Deciders:** Platform team
-- **Related:** [ADR-0001](0001-language-and-runtime.md), [ADR-0002](0002-monorepo.md), [ADR-0008](0008-api-contracts.md), [ADR-0014](0014-frontend.md), [ADR-0016](0016-environment-parity.md), [ADR-0017](0017-url-and-domain-structure.md)
+- **Related:** [ADR-0001](0001-language-and-runtime.md), [ADR-0002](0002-monorepo.md), [ADR-0008](0008-api-contracts.md), [ADR-0014](0014-frontend.md), [ADR-0016](0016-environment-parity.md), [ADR-0017](0017-url-and-domain-structure.md), [ADR-0027](0027-load-and-performance-testing.md)
 
 ## Context
 
@@ -17,6 +17,12 @@ where does it live, what drives it, and when does it run.**
 This ADR fixes that. It defines the test pyramid once, pins the **end-to-end and visual
 layer**, and reconciles cadence with affected-detection ([ADR-0002](0002-monorepo.md)) and
 the full-platform tier ([ADR-0016](0016-environment-parity.md)).
+
+**Scope note (2026-07-26).** Every layer below answers *is it correct*, at a load of
+roughly one user. *What does it cost, and where does it break* is a different question with
+a different tool, cadence and failure meaning; it is owned by
+[ADR-0027](0027-load-and-performance-testing.md) and is deliberately not part of this
+pyramid, `mise run test`, or the e2e suites.
 
 ## Decision drivers
 

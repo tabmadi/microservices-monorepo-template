@@ -1,0 +1,199 @@
+# ADR-0020 guardrails. Every number here has a measured basis, taken on
+# 2026-07-26 from cluster:full under the ADR-0027 load suite (browse @160 VUs,
+# checkout @40 VUs). Re-derive with `mise run perf:stress` + the `load-test`
+# Grafana dashboard's cost table rather than by taste.
+
+# ── PriorityClass tiers ──────────────────────────────────────────────────────
+# Eviction order under real node pressure: batch dies first, Core last. Values are
+# far below the k3s system classes (system-cluster-critical = 2000000000,
+# system-node-critical = 2000001000), so nothing here can out-prioritise the CNI
+# or kubelet's own workloads — which is exactly right, because a node that evicts
+# Cilium to keep a product service alive has lost the network the service needs.
+priorityClasses:
+  platform-critical:
+    value: 1000
+    # THE GLOBAL DEFAULT, and the choice deserves its reasoning. The obvious pick is
+    # `product`, but it is wrong here: the workloads that CANNOT declare a priority
+    # are exactly the ones that most need the high one. The upstream Temporal chart
+    # exposes per-service `resources` but no `priorityClassName` (verified against
+    # temporal-1.4.0), and the same is true of several vendored charts. Kyverno would
+    # normally mutate it in — docs/operational-surface.md lists Kyverno as Core — but
+    # it is not actually deployed, so there is no admission-time escape hatch.
+    #
+    # Defaulting to platform-critical therefore lands Temporal, Ory and the
+    # observability subcharts where they belong, and the workloads we DO control
+    # declare `product` explicitly (infra/helm/service/values.yaml) so they still sit
+    # below the platform. The cost is that third-party add-ons (ArgoCD, cert-manager)
+    # are also treated as critical, which is defensible — they are platform
+    # infrastructure — and strictly safer than evicting a database to save a Job.
+    globalDefault: true
+    description: >-
+      Core-tier platform components (docs/operational-surface.md): Postgres,
+      Temporal, OpenFGA, Kratos, Oathkeeper, the edge, and the observability
+      stack. Last to be evicted — a product service without these is useless.
+  product:
+    value: 100
+    # Declared explicitly by the service chart, not defaulted — see the note on
+    # platform-critical above for why the default goes the other way.
+    description: >-
+      Application services under services/. Set explicitly by the shared service
+      chart so product workloads sit below the platform they depend on.
+  batch:
+    value: 10
+    description: >-
+      Bootstrap and one-shot Jobs. Evicted first by design: a failed Job re-runs,
+      a failed database does not.
+
+# ── LimitRange: default requests/limits per namespace ────────────────────────
+# Applies ONLY to containers that declare nothing, at admission time. Existing pods
+# are not retro-fitted; they pick these up on their next rollout.
+#
+# `defaultMemoryLimit` is the number to be careful with — it is what OOM-kills an
+# undeclared container. Each is set well above the worst measured peak in that
+# namespace, because the population is third-party charts whose future versions we
+# do not control.
+limitRanges:
+  platform:
+    enabled: true
+    # Worst measured peak among the undeclared containers here: cnpg-operator
+    # 95Mi. (The heavy components — Tempo 1858Mi, temporal-history 647Mi, Loki
+    # 453Mi, Postgres 373Mi — all declare explicit values and are unaffected by
+    # this default.) 512Mi is ~5x that worst case.
+    defaultMemoryLimit: 512Mi
+    defaultMemoryRequest: 64Mi
+    defaultCPURequest: 50m
+  argocd:
+    enabled: true
+    # Worst measured peak: argocd-dex-server 133Mi. 512Mi is ~4x. repo-server is
+    # the one to watch — it spikes while rendering Helm charts, and this repo has
+    # ~20 of them.
+    defaultMemoryLimit: 512Mi
+    defaultMemoryRequest: 64Mi
+    defaultCPURequest: 50m
+  kube-system:
+    enabled: true
+    # Deliberately roomier than the others. Worst measured peak is cilium-agent at
+    # 202Mi, but Cilium's memory scales with endpoint and policy count, and this
+    # repo's default-deny policy set grows with every service. An OOM-killed
+    # cilium-agent takes the node's network with it, so the default gets 5x the
+    # measured peak rather than the 4x used above.
+    #
+    # `defaultMemoryRequest` is also higher: these are DaemonSets and control-plane
+    # add-ons that must always fit, and a too-small request lets the scheduler
+    # oversubscribe the node and then evict them.
+    defaultMemoryLimit: 1Gi
+    defaultMemoryRequest: 128Mi
+    defaultCPURequest: 50m
+
+# ── ResourceQuota: aggregate namespace cap ───────────────────────────────────
+# Sized for the LOCAL single-node k3d tier (24 cores / 31Gi allocatable). Override
+# per environment in infra/gitops/platform/<env>/values.yaml — a prod three-node
+# set has a different budget, and these numbers must not be mistaken for it.
+#
+# Two different numbers matter and they are easy to confuse:
+#
+#   requests.* is a RESERVATION. The scheduler subtracts it from the node whether or
+#     not the pod uses it, so this cap is the one that governs how much can be
+#     scheduled. Sized against what the charts actually declare.
+#   limits.memory is a CEILING SUM, and is expected to overcommit — every container
+#     could in principle reach its limit at once, which no node could satisfy. Its
+#     job is to stop a single runaway declaration, not to fit inside RAM.
+#
+# Baselines below are computed, not guessed: `mise run lint:resource-governance`
+# renders every chart (each service separately) and prints utilisation against these
+# caps. As of 2026-07-26, with 76 containers:
+#
+#   platform  requests 3.81 cores (48%) · 8.62Gi (54%) · limits 26.62Gi (55%)
+#   argocd    requests 0.40 cores (20%) · 0.50Gi (12%) · limits 4.00Gi (50%)
+#
+# For contrast, MEASURED usage under load was ~1.4 cores and 7.5Gi cluster-wide — so
+# requests are already ~2x real consumption, which is the honest cost of reserving
+# for peak rather than average.
+resourceQuotas:
+  platform:
+    enabled: true
+    requestsCPU: "8"
+    requestsMemory: 16Gi
+    # 48Gi, not 32Gi. At 32Gi the computed sum sat at 83% and roughly two additional
+    # services would have started failing to deploy — back-pressure arriving as a
+    # rejected pod during an unrelated change, which is the least legible moment for
+    # it. The lint above now reports utilisation on every CI run, so the cap can be
+    # tightened deliberately instead of discovered accidentally.
+    limitsMemory: 48Gi
+  argocd:
+    enabled: true
+    requestsCPU: "2"
+    requestsMemory: 4Gi
+    limitsMemory: 8Gi
+  # kube-system has NO quota, and this is a deliberate, documented gap rather than
+  # an oversight (ADR-0020 §Consequences). A ResourceQuota rejects pod CREATION
+  # once the cap is reached. In kube-system the pods being rejected would be the
+  # CNI DaemonSet, CoreDNS and the ingress controller — and the recourse for a
+  # rejected system pod is a working cluster, which is precisely what you no longer
+  # have. The blast radius is unbounded and self-inflicted, so the LimitRange above
+  # (which only ever ADDS defaults and can never reject) is where the line is drawn.
+  kube-system:
+    enabled: false
+
+# ── PodDisruptionBudgets ────────────────────────────────────────────────────
+# Only meaningful at replicas >= 2: `minAvailable: 1` in front of a single-replica
+# workload permits zero disruptions and makes `kubectl drain` hang indefinitely.
+# On this single-node local tier exactly one workload qualifies, so exactly one is
+# enabled. The rest are declared-but-disabled on purpose: they are the list a
+# multi-node environment turns on as it scales those components out, and keeping
+# them visible here is how the values file stays honest about what is NOT covered.
+podDisruptionBudgets:
+  postgres-pgbouncer:
+    enabled: true
+    minAvailable: 1
+    selector: { cnpg.io/poolerName: postgres-pgbouncer-rw }
+    rationale: >-
+      The connection pooler fronts every service's database access (ADR-0007).
+      Runs 2 replicas locally, so a drain may take one at a time but never both.
+
+  # ── Declared, disabled: single-replica on the local tier ──
+  # Postgres itself is absent from this list entirely: CNPG creates and owns
+  # `postgres-primary`, and a second PDB over the same pods would conflict.
+  temporal-frontend:
+    enabled: false
+    minAvailable: 1
+    selector: { app.kubernetes.io/name: temporal, app.kubernetes.io/component: frontend }
+    rationale: Every workflow start and query enters here; scale out before enabling.
+  temporal-history:
+    enabled: false
+    minAvailable: 1
+    selector: { app.kubernetes.io/name: temporal, app.kubernetes.io/component: history }
+    rationale: >-
+      Owns workflow state and shard ownership. Measured at 2.1 cores and 647Mi
+      under checkout load — the first Temporal component to need more than one
+      replica, and the first PDB to enable when it gets one.
+  temporal-matching:
+    enabled: false
+    minAvailable: 1
+    selector: { app.kubernetes.io/name: temporal, app.kubernetes.io/component: matching }
+    rationale: Task-queue dispatch; losing it stalls every worker.
+  loki:
+    enabled: false
+    minAvailable: 1
+    selector:
+      app.kubernetes.io/name: loki
+      app.kubernetes.io/component: single-binary
+      app.kubernetes.io/instance: observability
+    rationale: Log ingest; single-binary mode locally, microservices mode at scale.
+  tempo:
+    enabled: false
+    minAvailable: 1
+    selector: { app.kubernetes.io/name: tempo, app.kubernetes.io/instance: observability }
+    rationale: Trace ingest. Measured at 1858Mi under load — the heaviest single pod.
+  openfga:
+    enabled: false
+    minAvailable: 1
+    selector: { app.kubernetes.io/name: openfga }
+    rationale: Every authz-relevant read blocks on it (ADR-0010).
+  ory-oathkeeper:
+    enabled: false
+    minAvailable: 1
+    selector: { app.kubernetes.io/name: oathkeeper }
+    rationale: >-
+      The forward-auth hop on every /api request. Measured at 192m CPU under read
+      load — the busiest component on that path.

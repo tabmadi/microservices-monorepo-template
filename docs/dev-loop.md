@@ -97,6 +97,27 @@ committed deterministic test identity (an AAL1 user + an AAL2 operator); there i
 by hand. Playwright's runner is Node — the **one** sanctioned Node tool in the repo
 ([ADR-0001](adr/0001-language-and-runtime.md)), scoped to `e2e/` and CI; everything else stays on Bun.
 
+## Load & performance tests
+
+E2e answers *is it correct* at a load of about one user. *What does it cost and where does it
+break* is [ADR-0027](adr/0027-load-and-performance-testing.md): **k6** driving the edge from the
+repo-root `perf/` workspace, against the same `cluster:full`.
+
+```sh
+mise run perf:seed            # bulk catalog rows, so the read path has a realistic table
+mise run perf:smoke           # ~30s — are the scenarios still wired to the API?
+mise run perf                 # the steady baseline (~7min), nightly + pre-release
+mise run perf:stress          # ramp to saturation; thresholds are meant to break here
+```
+
+Metrics leave k6 over OTLP into the cluster's collector, so a run shows up in Grafana on the
+**`Load test`** dashboard next to the pod CPU/memory it caused — that correlation is the point.
+k6 runs its own embedded JS engine, so `perf/` adds **no** Node and no npm; the sanctioned Node
+island stays `e2e/` alone. Full guidance, including how to read the shapes, is
+[docs/perf/runbook.md](perf/runbook.md).
+
+These suites are not part of `mise run test` or `check`, and never implicitly gate a merge.
+
 ## Formatting & linting
 
 `mise run format` / `mise run lint` cover every language, including Markdown.

@@ -1,0 +1,19 @@
+apiVersion: v2
+name: resource-governance
+description: |
+  The ADR-0020 guardrails: PriorityClass tiers, per-namespace LimitRange and
+  ResourceQuota, and PodDisruptionBudgets for the stateful/multi-replica Core.
+
+  Why these live in one chart in the BASE tier, next to network-policies: every
+  object here has to exist *before* the workloads it governs. A LimitRange only
+  supplies defaults at admission time, so a pod created before it lands keeps
+  whatever (nothing) it declared, and a ResourceQuota created before its
+  LimitRange rejects pods that would otherwise have been defaulted. Sync-waves
+  inside this chart order the three against each other.
+
+  This chart is deliberately the ONLY place cluster-wide resource policy lives.
+  Per-workload requests/limits stay in each component's own values — the split is
+  "policy and defaults here, right-sized measurements there".
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

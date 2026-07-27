@@ -20,6 +20,7 @@ spec:
             - { name: {{ $k }}, value: {{ $v | quote }} }
             {{- end }}
           readinessProbe: { tcpSocket: { port: http } }
+          resources: {{- toYaml .Values.lowdefy.resources | nindent 12 }}
 ---
 apiVersion: v1
 kind: Service

@@ -1,0 +1,111 @@
+# Load & performance (ADR-0027). Shares the e2e workflow's expensive prerequisite —
+# a running cluster:full — and the same reasoning about cadence, but answers a
+# different question: not "is it correct" but "what does it cost and where does it
+# break". These jobs are NOT part of ci:affected and never implicitly gate a merge.
+#
+#   load  — nightly + pre-release. The baseline number, tracked over time.
+#   smoke — per-PR, opt-in via the `perf-smoke` label. ~30s of actual load; it
+#           proves the scenarios still run against the current API, nothing more.
+#
+# A threshold breach here is a PERFORMANCE REGRESSION TO TRIAGE, not a broken
+# build: the budgets in perf/scenarios/*.js are deliberately looser than the
+# ADR-0011 service SLOs, and a CI runner is a noisy place to measure. Read a red
+# nightly next to the previous night's, not in isolation.
+#
+# NOTE: cluster:full is heavy (~16GB RAM), and here it shares the runner with the
+# load generator. Absolute numbers from CI are not capacity figures (ADR-0027);
+# they are a series to diff against yesterday's.
+name: perf
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # nightly, after the e2e suite's 03:00
+  push:
+    tags: ["v*", "services/*/v*"] # pre-release (ADR-0013)
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "smoke, load, or stress"
+        default: "load"
+
+concurrency:
+  # Never two load runs against one cluster: they would measure each other.
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  load:
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+      - name: Provision the local SOPS age key
+        run: mise run secrets:age
+      - name: Bring up cluster:full
+        run: mise run cluster:full
+      # Seed before measuring: an empty catalog makes the read scenario a test of
+      # nothing (perf/seed/seed.sh).
+      - name: Seed bulk test data
+        run: mise run perf:seed
+      - name: Run the load suite
+        run: mise run perf${{ (github.event_name == 'workflow_dispatch' && inputs.profile != 'load') && format(':{0}', inputs.profile) || '' }}
+      - name: Upload k6 summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-summary-load
+          path: perf/results/
+          retention-days: 30
+      - name: Tear down
+        if: always()
+        run: mise run cluster:delete
+
+  smoke:
+    # Label-gated per-PR, same opt-in shape as e2e-smoke: an unlabeled PR never
+    # pays a full bring-up.
+    if: >-
+      github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'perf-smoke')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+      - name: Provision the local SOPS age key
+        run: mise run secrets:age
+      - name: Bring up cluster:full
+        run: mise run cluster:full
+      - name: Seed bulk test data
+        run: mise run perf:seed
+      - name: Run the smoke profile
+        run: mise run perf:smoke
+      - name: Upload k6 summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-summary-smoke
+          path: perf/results/
+          retention-days: 7
+      - name: Tear down
+        if: always()
+        run: mise run cluster:delete

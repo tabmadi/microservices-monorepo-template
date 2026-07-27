@@ -11,6 +11,13 @@ metadata:
 spec:
   instances: {{ .Values.cluster.instances }}
   imageName: {{ .Values.cluster.imageName }}
+  # ADR-0020. Postgres is the one component where the memory REQUEST matters as
+  # much as the limit: CNPG derives nothing from it, but the scheduler uses it to
+  # decide whether the node can host the instance at all, and a database that gets
+  # evicted takes every service with it. platform-critical priority for the same
+  # reason — it must be the last thing standing.
+  resources: {{- toYaml .Values.cluster.resources | nindent 4 }}
+  priorityClassName: {{ .Values.cluster.priorityClassName }}
   storage:
     size: {{ .Values.cluster.storage.size }}
     {{- with .Values.cluster.storage.storageClass }}
@@ -54,6 +61,15 @@ spec:
     name: {{ .Values.cluster.name }}
   instances: {{ .Values.cluster.pooler.instances }}
   type: rw
+  # The Pooler CR takes a full pod template override; `containers` is matched by
+  # name, so `pgbouncer` here patches the operator's own container rather than
+  # adding a second one.
+  template:
+    spec:
+      priorityClassName: {{ .Values.cluster.priorityClassName }}
+      containers:
+        - name: pgbouncer
+          resources: {{- toYaml .Values.cluster.pooler.resources | nindent 12 }}
   pgbouncer:
     poolMode: {{ .Values.cluster.pooler.poolMode }}
     parameters:
