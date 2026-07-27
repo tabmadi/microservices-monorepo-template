@@ -10,8 +10,12 @@ minio:
   persistence:
     enabled: true
     size: 5Gi
+  # ADR-0020. Measured 2026-07-26: 262Mi working set, 15m CPU. The memory limit was
+  # MISSING here (a request without a limit is half the rule), which left the object
+  # store free to grow into the node until the kernel picked a victim.
   resources:
-    requests: { memory: "256Mi" }
+    requests: { cpu: "50m", memory: "320Mi" }
+    limits:   { memory: "768Mi" }
   rootUser: minio
   rootPassword: minio-password
   # No phone-home: the MinIO server checks dl.min.io for a newer release on

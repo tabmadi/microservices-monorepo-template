@@ -1,0 +1,59 @@
+# The k6 island (ADR-0027). Same containment idiom as e2e/.mise.toml (Node) and
+# infra/ansible/.mise.toml (Ansible): the tool is pinned NEXT TO the only code
+# that uses it, not in the root [tools], so a developer running `lint`, `test` or
+# `cluster:full` never installs a load generator they are not using.
+#
+# Unlike the e2e island, this one adds no runtime. k6 is a single static Go binary
+# that executes the scenarios on its own embedded JS engine (Sobek) — there is no
+# Node here, no package.json, no lockfile, and no node_modules, and there must
+# never be: scripts/lint-node-scope.sh asserts npm lives only in e2e/.
+#
+# Tasks live here rather than at the root because mise tools flow DOWN a config
+# tree and never up — a root task cannot see this k6. The root keeps thin `perf*`
+# delegates so `mise run perf` stays the entrypoint for humans and CI.
+[tools]
+"aqua:grafana/k6" = "2.1.0"
+
+# The edge (*.localtest.me) must be hit directly, never through a dev HTTPS_PROXY
+# — otherwise the run measures the proxy. The in-cluster OTLP forward is loopback.
+# Belt-and-suspenders for both cases, same as e2e/.mise.toml.
+[env]
+NO_PROXY = "localhost,127.0.0.1,.localtest.me"
+no_proxy = "localhost,127.0.0.1,.localtest.me"
+
+[tasks.smoke]
+# Proves the scenarios and the target are wired; ~30s total. The per-PR lane.
+description = "Both scenarios, 1 VU, seconds — is the load suite itself healthy?"
+run = """
+bash run.sh browse smoke
+bash run.sh checkout smoke
+"""
+
+[tasks.load]
+# The steady baseline. This is the number nightly runs track over time; changing
+# the `load` profile's shape invalidates that history (perf/lib/config.js).
+description = "Steady-state baseline against cluster:full (~3min per scenario)"
+run = """
+bash run.sh browse load
+bash run.sh checkout load
+"""
+
+[tasks.stress]
+# Ramp past the knee. Thresholds are EXPECTED to break; the finding is the step
+# at which they broke. Run before a sizing or HPA decision (ADR-0020).
+description = "Ramp to saturation — find the knee. Thresholds are expected to fail."
+run = """
+bash run.sh browse stress
+bash run.sh checkout stress
+"""
+
+[tasks.soak]
+# ~30min, one scenario. Flat throughput with climbing memory is the leak signal.
+description = "Sustained load for leak detection (~30min)"
+run = "bash run.sh browse soak"
+
+[tasks.seed]
+# Bulk catalog rows so the read path is measured against a realistic table.
+#   mise run perf:seed -- 50000     |     mise run perf:seed -- --clean
+description = "Seed bulk products (default 5000); --clean removes them"
+run = "bash seed/seed.sh"

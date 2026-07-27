@@ -23,6 +23,23 @@ temporal-worker-controller:
   # operator's default). Deployed envs override in their per-env values.
   replicas: 1
 
+  # ADR-0020. Measured: 66Mi working set, 6m CPU.
+  #
+  # THE ONE CPU LIMIT LEFT IN THIS PLATFORM, and it is inherited rather than chosen.
+  # The subchart's own default carries `limits.cpu: 500m`, and a parent chart cannot
+  # delete it: Helm coalesces values maps key-by-key and SKIPS nulls coming from a
+  # parent's values.yaml, so `limits: { cpu: null }` here is silently ignored
+  # (verified against helm 4.2.2 — `--set ...limits.cpu=null` does work, but there is
+  # no per-chart --set in the shared ApplicationSet template, and adding one to a
+  # generic template for a single subchart is worse than the limit).
+  #
+  # Accepted because it cannot bite: 500m is ~80x the measured 6m peak of a
+  # leader-elected reconciler that does nothing between rollouts. ADR-0020 records it
+  # as a known exception rather than claiming the rule is universal.
+  resources:
+    requests: { cpu: "10m", memory: "96Mi" }
+    limits:   { memory: "256Mi" }
+
   certmanager:
     # The platform already runs cert-manager (infra/helm/platform/cert-manager,
     # wave 0), so the chart's bundled subchart stays off and only the Issuer +

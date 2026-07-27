@@ -1,0 +1,60 @@
+{{/*
+LimitRange per namespace (ADR-0020) — the safety net that makes "every container
+declares resources" true without forking every third-party chart.
+
+Measured basis (2026-07-26, cluster:full + the ADR-0027 load suite): 41 of 58
+containers declared NOTHING. Almost all of them are vendored charts we do not own
+— Cilium, ArgoCD, cert-manager, Traefik, hubble, sops-operator, local-path. Adding
+requests to each would mean carrying a values override per chart forever. A
+LimitRange instead defaults them at admission, so the invariant holds for anything
+that lands in the namespace, including a component added next year.
+
+`default` (limits) and `defaultRequest` (requests) apply ONLY to containers that
+omit them, so every explicitly right-sized value elsewhere in this repo wins. Note
+this is admission-time: existing pods are NOT retro-fitted, they pick the defaults
+up on their next restart/rollout.
+
+`max` is deliberately NOT set. A max on memory would reject the heavy Core
+components outright (Tempo measured 1858Mi peak), and a max on CPU is the CPU-limit
+policy this ADR rejects, arriving through the back door: LimitRange `max` on cpu
+makes the API server stamp a cpu LIMIT onto every container, which is exactly the
+CFS throttling we chose to avoid.
+*/}}
+{{- range $ns, $cfg := .Values.limitRanges }}
+{{- if $cfg.enabled }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: resource-defaults
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: resource-governance
+    app.kubernetes.io/part-of: platform
+  annotations:
+    # Wave -4: after the PriorityClasses, before the ResourceQuota. A quota that
+    # lands first rejects any pod the LimitRange would have defaulted.
+    argocd.argoproj.io/sync-wave: "-4"
+spec:
+  limits:
+    - type: Container
+      # Memory limit only, no cpu limit — ADR-0020's decision, applied to the
+      # default too so an undeclared container behaves like a declared one.
+      default:
+        memory: {{ $cfg.defaultMemoryLimit }}
+      defaultRequest:
+        cpu: {{ $cfg.defaultCPURequest }}
+        memory: {{ $cfg.defaultMemoryRequest }}
+      # NO `min`, and this was learned the expensive way rather than reasoned from
+      # first principles. An earlier revision set min.memory: 16Mi as a cheap guard
+      # against typos. Cilium's `install-cni-binaries` initContainer legitimately
+      # requests 10Mi — so the LimitRange would have REJECTED the CNI DaemonSet, on
+      # every node, leaving a cluster with no pod networking and no way to fix it
+      # from inside. Caught by rendering every chart against the proposed floor
+      # before applying it, which is now `mise run lint:resource-governance`.
+      #
+      # The general rule this leaves behind: a LimitRange in this platform may only
+      # ADD defaults, never REJECT. `min` and `max` both reject, so neither is used.
+      # It is the same reasoning that keeps ResourceQuota out of kube-system.
+{{- end }}
+{{- end }}

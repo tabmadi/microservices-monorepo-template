@@ -1,7 +1,7 @@
 # Platform ApplicationSets (ADR-0004). The platform tier is split into three
 # dependency layers, each its own ApplicationSet so ArgoCD can order them:
 #
-#   base (wave 0)  — sops-operator, cert-manager, network-policies, cilium, argocd
+#   base (wave 0)  — sops-operator, cert-manager, network-policies, resource-governance, cilium, argocd
 #                    Foundational, dependency-free. sops-operator must run before
 #                    any SopsSecret CR can be decrypted into Secrets (ADR-0005).
 #   data (wave 2)  — postgres, minio. The storage layer everything else sits on;
@@ -56,6 +56,11 @@ spec:
                 - { path: "infra/helm/platform/sops-operator" }
                 - { path: "infra/helm/platform/cert-manager" }
                 - { path: "infra/helm/platform/network-policies" }
+                  # ADR-0020 guardrails (PriorityClass, LimitRange, ResourceQuota,
+                  # PDB). Base tier because a LimitRange only defaults pods created
+                  # AFTER it exists, and the PriorityClasses must exist before any
+                  # workload names one — a pod naming a missing class is rejected.
+                - { path: "infra/helm/platform/resource-governance" }
                 - { path: "infra/helm/platform/temporal-worker-controller-crds" }
                 # Prod manages the CNI + ArgoCD itself through GitOps (the local
                 # tier excludes these — cluster:full installs them imperatively

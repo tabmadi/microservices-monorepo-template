@@ -17,6 +17,17 @@ cluster:
   create: true
   instances: 3
   imageName: ghcr.io/cloudnative-pg/postgresql:17.2
+  # Measured 2026-07-26 under the ADR-0027 load suite: 373Mi working set, 267m CPU
+  # peak (490m during the e2e suite). No cpu limit — a checkpoint or autovacuum is
+  # precisely the burst that CFS throttling turns into query latency (ADR-0020).
+  #
+  # shared_buffers is Postgres's own memory governor and is NOT derived from this
+  # limit, so raising the limit alone does not make Postgres use more; it only stops
+  # the kernel killing it. Tune both together or neither.
+  resources:
+    requests: { cpu: "200m", memory: "512Mi" }
+    limits:   { memory: "1Gi" }
+  priorityClassName: platform-critical
   storage:
     size: 20Gi
     storageClass: ""    # defaults to k3s local-path (ADR-0003)
@@ -40,6 +51,11 @@ cluster:
     poolMode: transaction      # ADR-0007: transaction mode is the default
     maxClientConn: 1000
     defaultPoolSize: 25
+    # Measured: 74Mi working set, 9m CPU per replica. pgbouncer is single-threaded
+    # and cheap; its cost is connections, not compute.
+    resources:
+      requests: { cpu: "50m", memory: "96Mi" }
+      limits:   { memory: "256Mi" }
   backup:
     enabled: true
     s3:
