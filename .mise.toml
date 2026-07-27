@@ -161,6 +161,29 @@ run = "bash scripts/dev-forward.sh"
 [tasks."db:migrate"]
 run = "bash scripts/db-migrate.sh"
 
+# ── OpenAPI mock ──────────────────────────────────────────────────────────────
+[tasks."prism:start"]
+# Discover and validate every canonical service OpenAPI source, build the ignored
+# runtime aggregate, and wait until the unified Prism API accepts connections.
+run = "bash scripts/prism.sh start"
+
+[tasks."prism:stop"]
+run = "bash scripts/prism.sh stop"
+
+[tasks."prism:logs"]
+run = "bash scripts/prism.sh logs"
+
+[tasks."prism:validate"]
+# Validate every source contract and the collision-safe runtime aggregation
+# without leaving a Prism container running.
+run = "bash scripts/prism.sh validate"
+
+[tasks."prism:frontend"]
+# Start the unified mock, wait for readiness, then run the frontend with its
+# development-only same-origin rewrite and auth bypass enabled.
+depends = ["prism:start"]
+run = "PRISM_MOCK_ENABLED=true DEV_AUTH_BYPASS=true API_BASE_URL=http://localhost:4010 bun run --cwd apps/frontend dev"
+
 # ── Code generation ───────────────────────────────────────────────────────────
 [tasks.gen]
 # No gateway codegen — the edge (Traefik + Oathkeeper) does not consume the

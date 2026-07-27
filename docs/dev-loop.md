@@ -66,6 +66,119 @@ mise run cluster:stop        # stops the cluster, keeps the image cache + volume
 mise run cluster:delete       # deletes the cluster (reclaims disk, forces a clean recreate)
 ```
 
+## Frontend development with Prism
+
+[Stoplight Prism](https://github.com/stoplightio/prism) is the stateless
+development mock for the application APIs. On every start it discovers and
+validates all canonical `services/*/openapi.yaml` sources, builds an ignored
+runtime-only aggregate, and starts one Prism server from that aggregate. Source
+contracts remain the only source of truth. The generated developer-portal
+projections are not inputs, and no mock routes or response files are maintained.
+
+```sh
+mise run prism:start       # discover, aggregate, and start the unified mock API
+mise run prism:frontend    # start unified Prism, wait, then start Next.js
+mise run prism:logs        # follow readable Prism request/validation logs
+mise run prism:validate    # validate sources and aggregation; leave Prism stopped
+mise run prism:stop        # stop and remove the Prism container
+```
+
+Prism listens at <http://localhost:4010>. `prism:frontend` sets
+`PRISM_MOCK_ENABLED=true`, `DEV_AUTH_BYPASS=true`, and
+`API_BASE_URL=http://localhost:4010`. Browser code continues to request the
+established same-origin `/api` prefix; a development-only Next.js rewrite
+forwards those requests to Prism. Server components use `API_BASE_URL` directly.
+Starting the frontend normally leaves both development switches disabled and
+restores the existing Kratos and real-gateway configuration. The equivalent
+opt-in values are documented in `apps/frontend/.env.example`.
+
+### Development authentication
+
+The Prism frontend command bypasses the protected-page Kratos cookie check so
+`/panel` and `/devportal` can be exercised without running the stateful identity
+stack. It also makes the existing server-side `whoami()` helper return this
+deterministic synthetic session:
+
+```text
+identity: 00000000-0000-4000-8000-000000000001
+email:    dev@example.com
+roles:    admin, operator
+aal:      aal2
+```
+
+There is no password or fake login form: the identity is active whenever
+`DEV_AUTH_BYPASS=true` in a `next dev` process. The bypass requires both that
+variable and `NODE_ENV=development`; setting it on a production Next.js process
+has no effect. Disable it by starting the frontend normally or unsetting
+`DEV_AUTH_BYPASS`. To use Prism while testing real Kratos, start Prism separately
+with `mise run prism:start`, then run Next.js with only
+`PRISM_MOCK_ENABLED=true API_BASE_URL=http://localhost:4010`.
+
+This narrow bypass is preferred to a Mock Kratos server because it keeps Kratos
+as the sole identity provider and does not duplicate browser-flow, CSRF, cookie,
+recovery, verification, or MFA state machines. The trade-off is deliberate:
+development mode proves authenticated application rendering and Prism API
+integration, but it cannot test login/logout, session expiry, redirects, cookie
+attributes, CSRF, identity persistence, OpenFGA decisions, or assurance-level
+transitions. Use the full local platform for those behaviors.
+
+Prism's CLI accepts one OpenAPI document per mock-server process. This repository
+has no canonical combined source: each HTTP service owns its contract at
+`services/<service>/openapi.yaml`. The combined
+`apps/frontend/public/devportal/openapi/internal.json` exists only as a generated
+Scalar developer-portal projection and is never read by Prism. Instead,
+the pinned Redocly CLI `join` command creates `.runtime/prism/openapi.yaml` from
+the canonical sources each time Prism starts. `.runtime/` is Git-ignored, the
+aggregate is replaced only after validation, and it is neither committed nor
+exposed by the frontend. Adding a new `services/<service>/openapi.yaml`
+automatically includes it on the next start.
+
+Redocly deduplicates identical shared components and rewrites their references.
+A duplicate operation, incompatible component definition, or other unsafe merge
+conflict fails startup with the affected input files instead of silently
+overwriting a contract. Resolve such ownership conflicts in the canonical
+contracts; the mock workflow does not invent route prefixes or maintain custom
+merge logic.
+
+Dynamic mode is enabled on the Prism server, so JSON responses are generated
+from the current schemas without a `Prefer: dynamic=true` header. Generated
+responses are stateless: creating or updating a resource does not affect a later
+read. Prism's default CORS support remains enabled for direct browser requests.
+Contract violations are intentional development feedback: unknown routes return
+`404`, unsupported methods return `405`, unsupported request media types return
+`415`, and schema-invalid requests return `422`.
+
+Authentication remains outside this mock. Prism does not reproduce Kratos
+sessions, cookies, CSRF checks, redirects, or stateful login and registration
+flows. Use the full local platform when those behaviors are under test.
+
+Known limitations of the unchanged contracts:
+
+- `GET /products`, `/orders`, `/orgs`, and `/charges` have array schemas without
+  `minItems`, so dynamic responses can legitimately be empty. Object schemas
+  generally permit additional properties, so generated records can also contain
+  fields not listed under `properties`. This can make table demos sparse or
+  noisy. A future contract change could constrain array sizes and object
+  extensibility where that matches the real API.
+- `POST /orders`, `POST /charges`, and the cancel/refund operations return a
+  `WorkflowHandle` whose optional `result_url` is only constrained as a URI.
+  Prism can therefore generate a URL that is not a mock route, so workflow
+  polling is not realistic. A future contract change could constrain or document
+  this value more precisely.
+- Every create, update, delete, checkout, cancel, refund, and workflow operation
+  is stateless under Prism. A later read does not reflect the mutation, and no
+  workflow progresses. Exercise persistence and Temporal behavior against the
+  real services.
+- The application contracts contain no OpenAPI security requirements; edge
+  authentication is defined outside OpenAPI. Prism therefore does not issue the
+  edge's authentication `401` responses. Use the full local edge for auth and
+  authorization testing.
+- The internal projection intentionally excludes cluster-only operations such as
+  the authz control-plane API and the Kratos `identity-created` webhook. Prism
+  does not use that projection, so canonical cluster-only operations are present
+  in the unified mock when their source specifications define them. Authentication
+  behavior surrounding those operations remains outside the mock.
+
 ## After a reboot
 
 If the whole cluster is stuck (every pod `ContainerCreating`, Cilium down) after

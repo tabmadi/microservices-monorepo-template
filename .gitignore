@@ -58,5 +58,8 @@ crash.log
 # Mise local cache
 .mise.local.toml
 
+# Runtime-only development artifacts
+.runtime/
+
 # Rumble cache
 .rumdl_cache

@@ -5,6 +5,7 @@
 // forward the session id as a header, and set a strict per-request CSP whose
 // nonce the root layout applies to first-party scripts.
 import { type NextRequest, NextResponse } from "next/server";
+import { isDevelopmentAuthEnabled } from "@/lib/auth/dev-auth";
 
 const SESSION_COOKIE = "ory_kratos_session";
 
@@ -52,7 +53,9 @@ export function proxy(req: NextRequest) {
 
   let session: string | undefined;
   if (isProtected) {
-    session = req.cookies.get(SESSION_COOKIE)?.value;
+    session = isDevelopmentAuthEnabled()
+      ? "development-auth-bypass"
+      : req.cookies.get(SESSION_COOKIE)?.value;
     if (!session) {
       const login = new URL("/auth/login", req.url);
       login.searchParams.set("return_to", req.nextUrl.pathname);

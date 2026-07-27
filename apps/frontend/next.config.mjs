@@ -6,6 +6,9 @@
 // session cookie. Set APP_ORIGIN per env (e.g. dev.example.com).
 const appOrigin = process.env.APP_ORIGIN;
 const allowedOrigins = appOrigin ? [appOrigin] : [];
+const prismMockEnabled =
+  process.env.NODE_ENV === "development" && process.env.PRISM_MOCK_ENABLED === "true";
+const prismApiBase = process.env.API_BASE_URL;
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -36,6 +39,20 @@ const nextConfig = {
         headers: [{ key: "X-App-Version", value: process.env.SERVICE_VERSION ?? "dev" }],
       },
     ]);
+  },
+  // Preserve the browser client's same-origin `/api` contract. Prism deliberately
+  // serves OpenAPI paths without the document's `servers: /api` prefix, so remove
+  // only that prefix on the development-only upstream hop.
+  rewrites() {
+    if (!prismMockEnabled) {
+      return [];
+    }
+    return [
+      {
+        source: "/api/:path*",
+        destination: `${prismApiBase}/:path*`,
+      },
+    ];
   },
 };
 
