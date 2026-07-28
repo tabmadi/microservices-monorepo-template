@@ -50,7 +50,8 @@ perf/results/
 # ...except the observability subcharts, which are vendored into git so ArgoCD's
 # repo-server renders them offline (no `helm dependency build` / network, which
 # wedges behind the local privoxy edge). See observability/Chart.yaml.
-!infra/helm/platform/observability/charts/*.tgz.terraform/
+!infra/helm/platform/observability/charts/*.tgz
+.terraform/
 *.tfstate
 *.tfstate.*
 *.tfplan

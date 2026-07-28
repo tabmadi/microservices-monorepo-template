@@ -75,8 +75,8 @@ In priority order:
 - Every backend service is written in Go unless an ADR sanctions an escape hatch.
 - Go version is pinned by `.mise.toml`; services do not override it.
 - The frontend is TypeScript on Next.js, single app per [ADR-0002](0002-monorepo.md).
-- Bun is the only JS runtime for code we author — no Go service image, the frontend image, or any artifact built from our own source installs Node. The two exceptions are vendored third-party tools rather than our code: the Playwright e2e/visual test runner ([ADR-0018](0018-testing-strategy.md)), runner and CI only; and the Lowdefy admin console image ([ADR-0012](0012-internal-admin.md)).
-- Node is never pinned in the root `.mise.toml`. Each exception pins it in its own island config (`e2e/.mise.toml`, `apps/admin/.mise.toml`) against the root `[env] NODE_VERSION`, so there is one version to bump and no dev installs Node for an island they do not touch. A third Node exception requires amending this ADR.
+- Bun is the only JS runtime for code we author — no Go service image, the frontend image, or any artifact built from our own source installs Node. The three exceptions are vendored third-party tools rather than our code: the Playwright e2e/visual test runner ([ADR-0018](0018-testing-strategy.md)), runner and CI only; the Lowdefy admin console image ([ADR-0012](0012-internal-admin.md)); and the API mock container ([ADR-0029](0029-api-mocking-and-ui-dev-loop.md)), local development only.
+- Node is never pinned in the root `.mise.toml`. Each exception that installs Node pins it in its own island config (`e2e/.mise.toml`, `apps/admin/.mise.toml`) against the root `[env] NODE_VERSION`, so there is one version to bump and no dev installs Node for an island they do not touch. An exception that ships as a container (the API mock) pins no Node at all. A further Node exception requires amending this ADR.
 - A Rust service requires its own ADR demonstrating measured Go inadequacy or Rust-native ecosystem need.
 - A Python service requires its own ADR; it is permitted only for ML/data workloads.
 - JVM, .NET, and Node.js backends are not permitted, with or without an ADR.

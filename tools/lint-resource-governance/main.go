@@ -229,8 +229,71 @@ func isWorkload(kind string) bool {
 	}
 }
 
+// chartDeps mirrors the dependency list of a chart's Chart.yaml.
+type chartDeps struct {
+	Dependencies []struct {
+		Name    string `yaml:"name"`
+		Version string `yaml:"version"`
+	} `yaml:"dependencies"`
+}
+
+// hasSubchart reports whether charts/ already holds that dependency, as a vendored
+// .tgz of exactly the pinned version or as an unpacked directory. Matching the
+// version rather than the name is what makes a Chart.yaml bump re-vendor instead of
+// silently rendering the stale subchart still sitting in charts/.
+func hasSubchart(dir, name, version string) bool {
+	base := filepath.Join(dir, "charts")
+	st, dirErr := os.Stat(filepath.Join(base, name))
+	if dirErr == nil && st.IsDir() {
+		return true
+	}
+	_, tgzErr := os.Stat(filepath.Join(base, fmt.Sprintf("%s-%s.tgz", name, version)))
+	return tgzErr == nil
+}
+
+// ensureDeps vendors a chart's subcharts when charts/ does not already hold them.
+// A fresh checkout has none — the .tgz files are gitignored — and `helm template`
+// refuses to render a chart whose declared dependencies are missing, which is a lint
+// that passes on every developer machine and fails on every CI runner.
+//
+// `update`, not `build`: nothing in this repo runs `helm repo add`, and `build`
+// rejects a repository it has no local name for while `update` resolves the URL
+// directly. That is the same call scripts/cluster-full.sh and cilium-install.sh make.
+// Skipped whenever the subcharts are present, so the usual local run neither reaches
+// the network nor rewrites Chart.lock.
+func ensureDeps(ctx context.Context, dir, name string) error {
+	raw, err := os.ReadFile(filepath.Join(dir, "Chart.yaml"))
+	if err != nil {
+		return fmt.Errorf("read Chart.yaml for %s: %w", name, err)
+	}
+	var deps chartDeps
+	unmarshalErr := yaml.Unmarshal(raw, &deps)
+	if unmarshalErr != nil {
+		return fmt.Errorf("parse Chart.yaml for %s: %w", name, unmarshalErr)
+	}
+	missing := false
+	for _, d := range deps.Dependencies {
+		if !hasSubchart(dir, d.Name, d.Version) {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return nil
+	}
+	out, updateErr := exec.CommandContext(ctx, "helm", "dependency", "update", dir).CombinedOutput()
+	if updateErr != nil {
+		return fmt.Errorf("helm dependency update %s (%s): %w", name, strings.TrimSpace(string(out)), updateErr)
+	}
+	return nil
+}
+
 // render runs `helm template` for one chart and returns its workload containers.
 func render(ctx context.Context, dir, name string) ([]entry, error) {
+	depErr := ensureDeps(ctx, dir, name)
+	if depErr != nil {
+		return nil, depErr
+	}
 	ns := chartNamespace[name]
 	if ns == "" {
 		ns = "platform"

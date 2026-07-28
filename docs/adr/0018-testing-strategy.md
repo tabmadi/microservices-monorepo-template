@@ -119,7 +119,10 @@ Kratos starts with an empty identity store and no seeded user, and the local SMT
 wired ([dev-loop](../dev-loop.md)). E2e therefore ships a **committed deterministic test-identity
 bootstrap** (an AAL1 product user and an AAL2 operator), provisioned the same way in CI and
 locally — the same throwaway-credential pattern SOPS already uses for the local age key
-([ADR-0016](0016-environment-parity.md)). No test depends on hand-created state.
+([ADR-0016](0016-environment-parity.md)). No test depends on hand-created state. The same bootstrap
+provisions the identity the `edge` development profile logs in as
+([ADR-0029](0029-api-mocking-and-ui-dev-loop.md)), so it is exercised daily rather than only by the
+nightly suite.
 
 ### Visual baselines and Figma
 
@@ -170,7 +173,7 @@ measurable trigger: adopt when built-in baseline diffing no longer scales.
 - All e2e and visual tests live in the repo-root `e2e/` workspace under one Playwright config.
 - The browser acceptance test is the platform's acceptance gauge; operator dashboards (Grafana, Hubble UI, Temporal, MinIO) are tested rendered behind a real AAL2 session, not by HTTP status alone.
 - Preflight readiness checks (Go/shell) run before the browser suite as failure localisers; they are not acceptance tests.
-- E2e runs against `cluster:full` with real services. MSW and all mocking are forbidden in e2e ([ADR-0014](0014-frontend.md)).
+- E2e runs against `cluster:full` with real services. MSW and all mocking are forbidden in e2e ([ADR-0014](0014-frontend.md)) — including the development API mock and the `edge` profile it runs in ([ADR-0029](0029-api-mocking-and-ui-dev-loop.md)), whose only consumer is a human looking at a browser.
 - Service integration tests run against `cluster:lite` deps and drive services through their generated SDK clients ([ADR-0008](0008-api-contracts.md)); they do not import another service's code.
 - The full e2e + visual suite runs nightly and pre-release. The smoke suite runs per-PR only when labeled. Neither is part of `ci:affected`.
 - Visual regression gates on committed `toHaveScreenshot` baselines; an intentional UI change updates the baseline in the same PR. Automated rendered-vs-Figma diffing is not a CI gate.
