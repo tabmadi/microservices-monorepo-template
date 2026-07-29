@@ -5,8 +5,9 @@
 // references and the collection renders empty/undefined. So the RSC page fetches
 // the data and this client child renders the interactive Table from it.
 import { Table } from "@/components/application/table/table";
+import type { components } from "@/sdks/catalog";
 
-export type Product = { id: string; name: string; price_cents: number };
+export type Product = components["schemas"]["Product"];
 
 export function ProductsTable({ products }: { products: Product[] }) {
   return (
