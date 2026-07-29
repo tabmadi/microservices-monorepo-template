@@ -261,7 +261,7 @@ Kratos at `…/auth/login`; register/login there and the redirect returns you to
 gated page. The Kratos session cookie is scoped to `dev.localtest.me` (parent
 domain), so one login covers the edge and every `*.dev.localtest.me` subdomain. The landing page and `/auth` UI are
 served by a host-run `next dev`
-(run `next dev -H 0.0.0.0` on the host — the dev server is not in-cluster), wired
+(run `mise run dev:frontend` on the host — the dev server is not in-cluster), wired
 through `infra/local/edge-auth.yaml`.
 
 **There is no seeded user** — Kratos starts with an empty identity store. Create
@@ -271,13 +271,28 @@ is rejected); then log in with it. Email
 verification is configured but the local SMTP sink isn't wired up, so verification
 mail isn't delivered — login doesn't require it.
 
-Start the host `next dev` with **`APP_ORIGIN=dev.localtest.me`** so the login and
-registration **server actions** pass Next's Origin/CSRF check (it feeds
-`serverActions.allowedOrigins` in `next.config.mjs`). Without it, form submits from
-the edge origin are rejected as cross-origin:
+Start the host dev server with **`mise run dev:frontend`**, which is `next dev -H
+0.0.0.0` plus the two env vars a host process needs to behave like the in-cluster
+frontend:
+
+| Env var                            | Why                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `EDGE_ORIGIN=https://dev.localtest.me:8443` | The environment's edge origin. **Server components** fetch through it (`src/lib/server-fetch/server.ts`) — it is the edge, not a service: the `/api/<resource>` IngressRoutes match on `Host(dev.localtest.me)` and Oathkeeper injects identity there. `next.config.mjs` also derives the **server-action** CSRF allowlist from it. Unset, `/panel/products` throws at the first fetch. |
+| `NODE_TLS_REJECT_UNAUTHORIZED=0`   | The local wildcard cert is signed by the SelfSigned `ClusterIssuer` — a self-signed leaf, not a CA — so Node cannot be taught to trust it via `NODE_EXTRA_CA_CERTS`. Local only; deployed envs have Let's Encrypt certs and set neither var.                                                                     |
+
+Starting the dev server another way — an IDE run config, a debugger — needs the
+same env: copy `apps/frontend/.env.example` to `.env.local`, which Next loads
+before evaluating `next.config.mjs`.
+
+Browser-side calls need no such variable: `client.ts` uses a relative `/api`, which
+is the same origin by construction ([ADR-0017](adr/0017-url-and-domain-structure.md)).
+A server-side `fetch` has no document to resolve a relative URL against, so the
+origin has to be named once — and it must be configuration, not the request's
+`Host` header, because that header is client-controlled and this fetcher forwards
+the user's session cookie.
 
 ```sh
-APP_ORIGIN=dev.localtest.me next dev -H 0.0.0.0
+mise run dev:frontend
 ```
 
 The full Kratos self-service set is served under `/auth/` — `login`, `register`,
