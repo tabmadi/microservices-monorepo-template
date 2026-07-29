@@ -20,6 +20,16 @@ COPY . .
 # the X-App-Version response header both report the git SHA / release.
 ARG SERVICE_VERSION=dev
 ENV SERVICE_VERSION=$SERVICE_VERSION
+# Optional, and deliberately EMPTY by default. `output: "standalone"` freezes
+# next.config into server.js, so passing EDGE_ORIGIN here bakes the server-action
+# CSRF allowlist — and with it one env's host — into the image, which forfeits the
+# build-once / promote-by-digest flow (ADR-0013). Unset, the allowlist is empty and
+# the check falls back to Origin == (X-Forwarded-)Host, which ADR-0017's same-origin
+# layout already satisfies. Pass it only for a build you intend to pin to one env.
+# The RUNTIME EDGE_ORIGIN that server components fetch with is separate and comes
+# from the pod env (infra/gitops/services/<env>/values/frontend.yaml).
+ARG EDGE_ORIGIN=
+ENV EDGE_ORIGIN=$EDGE_ORIGIN
 RUN cd apps/frontend && bun run build
 
 FROM oven/bun:${BUN_VERSION}-alpine AS runtime

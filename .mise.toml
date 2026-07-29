@@ -158,6 +158,23 @@ run = "kubectl --context k3d-${CLUSTER:-platform} -n argocd scale statefulset/ar
 # Long-running — use a separate terminal. See docs/dev-loop.md.
 run = "bash scripts/dev-forward.sh"
 
+[tasks."dev:frontend"]
+# The host-run `next dev` the local edge routes `/` to (ADR-0014/0016). Long-running
+# — use a separate terminal. Two env vars are what make a host process behave like
+# the in-cluster frontend; see docs/dev-loop.md:
+#   EDGE_ORIGIN                 where server components fetch — the edge, not a cluster
+#                               DNS name the host cannot resolve; the /api IngressRoutes
+#                               match on Host(dev.localtest.me), so it is the public
+#                               origin. next.config.mjs also derives the server-action
+#                               CSRF allowlist from it.
+#   NODE_TLS_REJECT_UNAUTHORIZED  the local wildcard cert is self-signed by the
+#                               SelfSigned ClusterIssuer (a leaf, not a CA), so it
+#                               cannot be trusted via NODE_EXTRA_CA_CERTS. Local only:
+#                               deployed envs get Let's Encrypt certs and set neither.
+dir = "apps/frontend"
+env = { EDGE_ORIGIN = "https://dev.localtest.me:8443", NODE_TLS_REJECT_UNAUTHORIZED = "0" }
+run = "bun run next dev -H 0.0.0.0"
+
 [tasks."db:migrate"]
 run = "bash scripts/db-migrate.sh"
 
