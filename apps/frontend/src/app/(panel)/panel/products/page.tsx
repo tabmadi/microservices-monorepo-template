@@ -10,7 +10,7 @@ import { createServerClient } from "@/lib/server-fetch/server";
 import { panel } from "@/strings/panel";
 // React Aria's Table must build its collection client-side, so the interactive
 // table is a client child; this RSC just fetches and hands it the data.
-import { type Product, ProductsTable } from "./products-table";
+import { type Product, ProductsTable } from "./_components/products-table";
 
 type CatalogPaths = {
   "/products": { get: { responses: { 200: { content: { "application/json": Product[] } } } } };

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { devportal } from "@/strings/devportal";
-import { ApiReference } from "./api-reference";
+import { ApiReference } from "./_components/api-reference";
 
 export const metadata: Metadata = { title: devportal.title, description: devportal.description };
 
