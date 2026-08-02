@@ -7,11 +7,6 @@
 #   application services                      replaced by their OpenAPI contract
 #   Temporal · OpenFGA · CNPG · observability · ArgoCD   absent
 #
-# INCOMPLETE: the API mock that serves `/api` is not wired up yet, so this profile
-# currently brings up a real edge in front of nothing — every `/api` route 404s
-# until the mock lands. Everything else (TLS, Kratos, Oathkeeper, the host edge
-# glue, the seeded identities) is real and usable: you can log in for real today.
-#
 # So the frontend's auth path is byte-identical to production — there is no bypass,
 # no development provider, no NODE_ENV branch, because nothing needs one.
 #
@@ -23,8 +18,9 @@
 # Not ArgoCD-driven, deliberately: Argo is the full tier's engine (ADR-0016), and
 # this is an inner-loop tier. Same reasoning as cluster:lite's imperative apply.
 #
-# Related task: `mise run cluster:edge-glue` re-stamps the host edge glue alone
-# (hidden; this script and the start/reboot paths already run it for you).
+# Related tasks: `mise run mock:start` runs the mock standalone (no auth stack) for
+# logged-out surfaces; `mise run cluster:edge-glue` re-stamps the host edge glue
+# alone (hidden; this script and the start/reboot paths already run it for you).
 set -euo pipefail
 
 source "$(dirname "$0")/lib/log.sh"
@@ -32,6 +28,7 @@ source "$(dirname "$0")/lib/log.sh"
 CLUSTER="${CLUSTER:-platform}"
 NS="platform"
 DOMAIN="${DOMAIN:-dev.localtest.me}"
+SPEC="apps/frontend/public/devportal/openapi/internal.json"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -108,9 +105,23 @@ h upgrade --install ory infra/helm/platform/ory \
   --set-file 'kratos.kratos.identitySchemas.user\.v1\.json=infra/auth/kratos/identity-schemas/user.v1.json' \
   --set-file 'oathkeeper.oathkeeper.accessRules=infra/auth/oathkeeper/access-rules.json'
 
-# 7. The API mock that replaces the application services on `/api` belongs here
-#    (ADR-0029), stamping the committed `internal.json` projection into the cluster
-#    on every run. Not implemented yet — see the INCOMPLETE note in the header.
+# 7. The mock. The ConfigMap is stamped from the committed projection on every run
+#    (not baked into mock.yaml), so a `mise run gen:openapi-public` reaches the
+#    cluster by re-running this task.
+step "publishing the committed OpenAPI projection to the mock"
+[ -f "$SPEC" ] || fail "$SPEC is missing — run: mise run gen:openapi-public"
+k -n "$NS" create configmap api-mock-spec --from-file=internal.json="$SPEC" \
+  --dry-run=client -o yaml | k apply -f -
+k apply -f infra/local/mock.yaml
+# Examples-first by default (ADR-0029); MOCK_DYNAMIC=1 generates every response
+# from the schema instead, for an endpoint whose examples do not exist yet.
+prism_flags=""
+if [ "${MOCK_DYNAMIC:-0}" = "1" ]; then
+  prism_flags="--dynamic"
+fi
+k -n "$NS" set env deploy/api-mock PRISM_FLAGS="$prism_flags"
+k -n "$NS" rollout restart deploy/api-mock
+k -n "$NS" rollout status deploy/api-mock --timeout=180s
 
 # 8. Host edge glue: the catch-all `/` route to the host `next dev` and the
 #    docker-bridge EndpointSlice. cluster-ensure.sh skips it on a brand-new cluster
@@ -130,18 +141,16 @@ login_email="$(bun --silent -e \
 
 cat <<EOF
 
-✓ cluster:edge up — real edge + real identity.
+✓ cluster:edge up — real edge + real identity, mocked application data.
   Frontend:      bun run --cwd apps/frontend dev     (host :3000, reached via the edge)
   Open:          https://${DOMAIN}:8443/
   Log in as:     ${login_email}
                  (password: e2e/fixtures/identities.ts — sessions last 7 days)
+  Mock logs:     kubectl -n ${NS} logs -f deploy/api-mock   (the routes it registered)
+  Refresh spec:  mise run gen:openapi-public && mise run cluster:edge
   Teardown:      mise run cluster:stop  (keep cache) / cluster:delete (delete)
 
-  ⚠ No API mock yet: nothing serves /api on this tier, so any route that fetches
-    application data will fail. The auth path is real and complete — logging in,
-    CSRF, expiry and the Oathkeeper 401/403 all behave as they do in production.
-
-  This tier is also stateless by design: once the mock lands, a create will not be
-  reflected by the next read and no workflow progresses. Persistence, Temporal and
-  authorization decisions are exercised against real services (cluster:full).
+  This tier is stateless: a create is not reflected by the next read, and no
+  workflow progresses. Persistence, Temporal and authorization decisions are
+  exercised against real services (cluster:full), never asserted here.
 EOF
