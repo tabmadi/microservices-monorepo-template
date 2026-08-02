@@ -104,11 +104,10 @@ run = "bash scripts/cluster-full.sh"
 # The `edge` profile (ADR-0016, ADR-0029): the tier for building authenticated UI.
 # Traefik + cert-manager + Kratos + Oathkeeper + Postgres are REAL and the frontend
 # runs natively on :3000, with its production auth path and no development-only auth
-# code. Temporal, OpenFGA, CNPG, observability and ArgoCD are absent.
-#
-# INCOMPLETE: the API mock that replaces the application services on /api is not
-# wired up yet, so nothing serves /api on this tier. Logging in works end to end;
-# any route that fetches application data does not. See docs/dev-loop.md.
+# code. Temporal, OpenFGA, CNPG, observability and ArgoCD are absent: the
+# application services are replaced by the committed OpenAPI projection, served by
+# the API mock. MOCK_DYNAMIC=1 makes the mock generate every response from the
+# schema instead of serving the spec's examples. See docs/dev-loop.md.
 run = "bash scripts/cluster-edge.sh"
 
 [tasks."cluster:edge-glue"]
@@ -193,6 +192,23 @@ run = "bun run next dev -H 0.0.0.0"
 
 [tasks."db:migrate"]
 run = "bash scripts/db-migrate.sh"
+
+# ── API mock, standalone ──────────────────────────────────────────────────────
+# The `edge` profile minus the auth stack (ADR-0029), for landing pages and other
+# logged-out surfaces: one container serving the committed OpenAPI projection on
+# 127.0.0.1:4010, no cluster required. Anything behind a session needs the real
+# edge — cluster:edge. Point the frontend at it with MOCK_API_ORIGIN
+# (apps/frontend/.env.example).
+[tasks."mock:start"]
+run = "bash scripts/mock.sh start"
+
+[tasks."mock:stop"]
+run = "bash scripts/mock.sh stop"
+
+[tasks."mock:logs"]
+# Follows the container log — which begins with the routes Prism registered, the
+# first thing to check when a path 404s.
+run = "bash scripts/mock.sh logs"
 
 [tasks."auth:seed"]
 # Seed the committed deterministic test identities (ADR-0018) into a running Kratos.

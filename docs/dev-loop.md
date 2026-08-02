@@ -69,7 +69,7 @@ inverting the usual split: **the edge and the identity stack stay real, the
 application services are replaced by their own OpenAPI contract.**
 
 ```sh
-mise run cluster:edge   # Traefik + cert-manager + Kratos + Oathkeeper + Postgres
+mise run cluster:edge   # Traefik + cert-manager + Kratos + Oathkeeper + Postgres + the API mock
 cp apps/frontend/.env.example apps/frontend/.env.local
 bun run --cwd apps/frontend dev                          # host :3000, reached through the edge
 ```
@@ -84,10 +84,32 @@ production runs. The frontend carries **no** development-only auth code — no b
 fake session, no `NODE_ENV` branch in the session path — and `mise run
 lint:auth-inline` fails the build if one appears.
 
-> **The API mock is not wired up yet.** The auth half of this tier is complete and
-> usable today; the half that serves application data from the committed
-> `internal.json` projection is not, so any route that fetches data will fail until
-> it lands. Until then, real data means `cluster:full`.
+The mock serves `apps/frontend/public/devportal/openapi/internal.json`, the same
+committed projection the developer portal renders, and nothing else: no aggregate,
+no fixture files. So refreshing it after a contract change is two commands:
+
+```sh
+mise run gen:openapi-public && mise run cluster:edge
+```
+
+Response bodies come from the spec's `example`/`examples` first and fall back to
+schema generation only where none exists — which is why the fidelity work belongs in
+`services/<svc>/openapi.yaml`, where the portal benefits too. `MOCK_DYNAMIC=1`
+generates everything instead, for an endpoint whose examples do not exist yet.
+`kubectl -n platform logs deploy/api-mock` opens with the routes it registered — the
+first thing to read when a path 404s.
+
+For landing pages and other logged-out surfaces, skip the cluster entirely:
+
+```sh
+mise run mock:start    # one container on 127.0.0.1:4010
+mise run mock:logs     # the routes it registered
+mise run mock:stop
+```
+
+with `MOCK_API_ORIGIN=http://127.0.0.1:4010` in `.env.local`. There is no login
+here, so a gated route redirects to a login page that is not running; that is the
+tier, not a bug.
 
 **What this tier cannot tell you.** It is stateless: a create is not reflected by
 the next read, a `WorkflowHandle`'s `result_url` polls nothing, and no authorization

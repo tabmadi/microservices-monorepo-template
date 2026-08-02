@@ -1,0 +1,130 @@
+# The API mock for the `edge` local profile (ADR-0029). Local-only by nature: it
+# exists in no deployed environment, no chart, and no image built from our source.
+# It replaces every application service on `/api` while Traefik, Kratos, Oathkeeper
+# and Postgres stay REAL — so the frontend's authentication path is byte-identical
+# to production and the app needs no development-only auth code.
+#
+# Input: the committed `internal.json` projection (ADR-0008), mounted from the
+# ConfigMap `api-mock-spec`, which scripts/cluster-edge-profile.sh stamps from
+# apps/frontend/public/devportal/openapi/internal.json on every run — the same
+# read-it-fresh-every-time pattern cluster-edge.sh uses for the EndpointSlice, so a
+# `mise run gen:openapi-public` is picked up by re-running the profile. There is no
+# aggregate, no merge step, and no fixture file: a mocked response shape that is not
+# derivable from a committed OpenAPI artefact is a defect.
+#
+# NEVER applied on cluster:full — its routes claim the same /api prefixes the real
+# service charts do (infra/helm/service/templates/ingressroute.yaml).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-mock
+  namespace: platform
+  labels: { app: api-mock, local.platform/component: mock }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: api-mock } }
+  template:
+    metadata: { labels: { app: api-mock } }
+    spec:
+      containers:
+        - name: prism
+          # Pinned (ADR-0002). Vendored third-party Node software we run but do not
+          # author, exactly like the Playwright runner and the Lowdefy console
+          # (ADR-0001) — it ships as a container, so it pins no Node in any
+          # .mise.toml and adds no package.json or lockfile to the repo.
+          image: stoplight/prism:5.15.10
+          # The image's entrypoint IS `prism`; override it with a shell so the
+          # examples-first/schema-generated switch is one env var rather than two
+          # manifests. PRISM_FLAGS is empty by default = examples-first: committed
+          # `example`/`examples` from the spec are served verbatim, and only paths
+          # without one fall back to schema generation. `--dynamic` (set by
+          # MOCK_DYNAMIC=1 on the profile task) generates every response instead,
+          # which is for exploring an endpoint whose examples do not exist yet.
+          command: ["/bin/sh", "-c"]
+          args:
+            - exec prism mock --host 0.0.0.0 --port 4010 ${PRISM_FLAGS} /spec/internal.json
+          env:
+            - { name: PRISM_FLAGS, value: "" }
+          ports: [{ name: http, containerPort: 4010 }]
+          # Prism exposes no health endpoint; the listener accepting is the signal.
+          readinessProbe:
+            tcpSocket: { port: 4010 }
+            initialDelaySeconds: 3
+          volumeMounts:
+            - { name: spec, mountPath: /spec, readOnly: true }
+          # Sized for a laptop tier, not governed by the ADR-0020 LimitRange — the
+          # resource-governance chart is a base-tier component and this profile does
+          # not run it, so no priorityClassName either (naming an absent
+          # PriorityClass is rejected by the API server).
+          resources:
+            requests: { cpu: 25m, memory: 96Mi }
+            limits: { memory: 256Mi }
+      volumes:
+        - name: spec
+          configMap: { name: api-mock-spec }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-mock
+  namespace: platform
+  labels: { app: api-mock, local.platform/component: mock }
+spec:
+  selector: { app: api-mock }
+  ports: [{ name: http, port: 80, targetPort: 4010 }]
+---
+# Strip the shared /api prefix, mirroring the per-service stripprefix the real edge
+# applies (infra/helm/service/templates/ingressroute.yaml) — a real service mounts
+# its resources at root, and so does the mock: Prism serves the document's paths
+# (`/products`) without the `servers: /api` base path.
+#
+# If a future Prism honours the base path instead, the symptom is a 404 on every
+# /api route while `kubectl -n platform logs deploy/api-mock` shows the routes
+# registered under /api; the fix is dropping this middleware from the route below,
+# and nothing else.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: api-mock-stripprefix
+  namespace: platform
+  labels: { app: api-mock, local.platform/component: mock }
+spec:
+  stripPrefix:
+    prefixes:
+      - /api
+---
+# The real edge chain, in the real order (ADR-0009): strip client-supplied identity
+# headers, then Oathkeeper ForwardAuth, then security headers, then strip /api. The
+# mock is unaware of every one of them — it issues no 401 and ignores every
+# credential it receives (ADR-0029) — which is the point: the 401/403 a UI must
+# handle comes from Oathkeeper here, exactly as in production.
+#
+# Resources are enumerated, never a bare /api wildcard (ADR-0017, lint:api-wildcard):
+# the set matches the Oathkeeper `api-services` rule and the projection's paths.
+# /api/observability is deliberately NOT here — it is the Faro ingest route
+# (ADR-0028), not an application resource.
+#
+# No Host() match, unlike the service chart: DOMAIN is overridable locally, and
+# infra/local/edge-auth.yaml omits it for the same reason.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: api-mock
+  namespace: platform
+  labels: { app: api-mock, local.platform/component: mock }
+spec:
+  entryPoints: [websecure]
+  routes:
+    - kind: Rule
+      match: PathPrefix(`/api/products`) || PathPrefix(`/api/orders`) || PathPrefix(`/api/orgs`) || PathPrefix(`/api/charges`)
+      middlewares:
+        - name: strip-identity-headers
+        - name: oathkeeper-forward-auth
+        - name: security-headers
+        - name: api-mock-stripprefix
+      services:
+        - name: api-mock
+          port: 80
+  tls:
+    secretName: wildcard-tls

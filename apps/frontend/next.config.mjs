@@ -16,6 +16,15 @@
 const edgeOrigin = process.env.EDGE_ORIGIN;
 const allowedOrigins = edgeOrigin ? [new URL(edgeOrigin).host] : [];
 
+// Standalone-mock mode (ADR-0029): with no cluster there is no edge to serve /api,
+// so the dev server proxies it to the mock and the browser keeps the same-origin
+// contract ADR-0017 gives it (src/lib/server-fetch/client.ts calls a relative
+// /api). The mock serves the spec's paths at root — the same shape the edge's /api
+// stripPrefix produces — hence the prefix is dropped on the way through.
+//
+// Local-only: unset in every deployed environment, and it carries no auth meaning.
+const mockApiOrigin = process.env.MOCK_API_ORIGIN;
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
@@ -38,6 +47,11 @@ const nextConfig = {
   // Stamp the shipped build's identity on every response (ADR-0013), so "did prod
   // actually update?" is answerable from response headers / devtools, and a stale
   // browser bundle is caught by comparing this against the backend's X-App-Version.
+  rewrites() {
+    return Promise.resolve(
+      mockApiOrigin ? [{ source: "/api/:path*", destination: `${mockApiOrigin}/:path*` }] : [],
+    );
+  },
   headers() {
     return Promise.resolve([
       {
