@@ -1,0 +1,42 @@
+{{/*
+PodDisruptionBudgets (ADR-0020) for the multi-replica and stateful Core.
+
+The important thing to understand before adding one: a PDB constrains only
+VOLUNTARY disruption (`kubectl drain`, a node upgrade, the descheduler). It does
+nothing about a crash, an OOM kill, or a node dying. So it is a drain-safety
+device, not an availability guarantee.
+
+And it has a sharp edge that decides the shape of this file. A PDB with
+`minAvailable: 1` in front of a SINGLE-replica workload permits zero disruptions —
+`kubectl drain` then blocks forever rather than failing, which on the single-node
+local tier means every node operation hangs on a component that could never have
+survived the drain anyway. CNPG demonstrates the behaviour already: it ships its
+own `postgres-primary` PDB, and `kubectl get pdb` reports ALLOWED DISRUPTIONS = 0.
+
+Therefore each entry is explicitly `enabled`, and on the local tier only the
+genuinely multi-replica workloads turn it on. This is a real doc-vs-reality gap and
+ADR-0020 names it rather than pretending the file covers everything.
+
+Postgres itself is deliberately absent: the CNPG operator owns that PDB, and a
+second one over the same pods would be redundant at best and conflicting at worst.
+*/}}
+{{- range $name, $cfg := .Values.podDisruptionBudgets }}
+{{- if $cfg.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  namespace: {{ $cfg.namespace | default "platform" }}
+  labels:
+    app.kubernetes.io/name: resource-governance
+    app.kubernetes.io/part-of: platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+    resource-governance/rationale: {{ $cfg.rationale | quote }}
+spec:
+  minAvailable: {{ $cfg.minAvailable | default 1 }}
+  selector:
+    matchLabels: {{- toYaml $cfg.selector | nindent 6 }}
+{{- end }}
+{{- end }}

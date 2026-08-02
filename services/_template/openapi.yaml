@@ -32,6 +32,13 @@ paths:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/Item" }
+                # Every 2xx response schema carries an `example` (CI-linted, ADR-0029):
+                # it is what the API mock serves the UI and what the developer portal
+                # renders. A list needs its own — the item schema's example says
+                # nothing about how many rows come back.
+                example:
+                  - { id: 0f27f7f0-1111-4000-8000-000000000001, name: First item }
+                  - { id: 0f27f7f0-1111-4000-8000-000000000002, name: Second item }
         "default":
           $ref: "#/components/responses/Error"
     post:
@@ -76,6 +83,8 @@ components:
       properties:
         id:   { type: string, format: uuid }
         name: { type: string, minLength: 1 }
+      # On the schema, so every response referencing it inherits one example.
+      example: { id: 0f27f7f0-1111-4000-8000-000000000001, name: First item }
     ItemInput:
       type: object
       description: Request body to create an item.

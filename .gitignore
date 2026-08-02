@@ -41,12 +41,17 @@ blob-report/
 # Saved auth storage states (session cookies) from the e2e setup project.
 e2e/.auth/
 
+# k6 load-run summaries (ADR-0027). Evidence attached to a PR or a CI artifact,
+# not repo content — a committed one would be stale the next day.
+perf/results/
+
 # Helm / Terraform
 **/charts/*.tgz
 # ...except the observability subcharts, which are vendored into git so ArgoCD's
 # repo-server renders them offline (no `helm dependency build` / network, which
 # wedges behind the local privoxy edge). See observability/Chart.yaml.
-!infra/helm/platform/observability/charts/*.tgz.terraform/
+!infra/helm/platform/observability/charts/*.tgz
+.terraform/
 *.tfstate
 *.tfstate.*
 *.tfplan
@@ -57,9 +62,6 @@ crash.log
 
 # Mise local cache
 .mise.local.toml
-
-# Runtime-only development artifacts
-.runtime/
 
 # Rumble cache
 .rumdl_cache

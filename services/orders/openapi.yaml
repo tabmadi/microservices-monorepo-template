@@ -14,7 +14,20 @@ paths:
       description: List all orders.
       tags: [orders]
       responses:
-        "200": { description: The order list, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Order" } } } } }
+        "200":
+          description: The order list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Order" }
+                # Served verbatim by the API mock (ADR-0029). The statuses vary on
+                # purpose: a list example with one status is how a UI ships with an
+                # unstyled badge for every other one.
+                example:
+                  - { id: 2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001, product_id: 6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c001, quantity: 2, total_cents: 259800, status: confirmed }
+                  - { id: 2c9f0b71-5d64-4a0e-9b83-0f27f7f0d002, product_id: 6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c002, quantity: 1, total_cents: 89900, status: pending }
+                  - { id: 2c9f0b71-5d64-4a0e-9b83-0f27f7f0d003, product_id: 6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c003, quantity: 4, total_cents: 59600, status: cancelled }
         default: { $ref: "#/components/responses/Error" }
     post:
       operationId: checkout
@@ -84,6 +97,10 @@ components:
         run_id: { type: string }
         status: { type: string, enum: [running, completed, failed, cancelled] }
         result_url: { type: string, format: uri, description: "GET to fetch terminal status + result" }
+      # `running` is the honest example: it is what the real 202 returns. Against the
+      # API mock the poll never progresses (ADR-0029) — workflow progression is
+      # exercised against real services, so build the pending state and stop there.
+      example: { id: checkout-2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001, run_id: 019a3f8c-6d21-7c4b-8e55-0f27f7f0e001, status: running, result_url: /api/orders/2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001 }
     CheckoutInput:
       type: object
       description: Request body to start a checkout.
@@ -101,3 +118,4 @@ components:
         quantity:    { type: integer }
         total_cents: { type: integer }
         status:      { type: string, enum: [pending, confirmed, failed, cancelled] }
+      example: { id: 2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001, product_id: 6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c001, quantity: 2, total_cents: 259800, status: confirmed }

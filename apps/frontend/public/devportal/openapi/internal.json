@@ -40,7 +40,24 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/Product"
-                  }
+                  },
+                  "example": [
+                    {
+                      "id": "6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c001",
+                      "name": "Aeron chair",
+                      "price_cents": 129900
+                    },
+                    {
+                      "id": "6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c002",
+                      "name": "Standing desk",
+                      "price_cents": 89900
+                    },
+                    {
+                      "id": "6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c003",
+                      "name": "Monitor arm",
+                      "price_cents": 14900
+                    }
+                  ]
                 }
               }
             }
@@ -208,7 +225,30 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/Order"
-                  }
+                  },
+                  "example": [
+                    {
+                      "id": "2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001",
+                      "product_id": "6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c001",
+                      "quantity": 2,
+                      "total_cents": 259800,
+                      "status": "confirmed"
+                    },
+                    {
+                      "id": "2c9f0b71-5d64-4a0e-9b83-0f27f7f0d002",
+                      "product_id": "6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c002",
+                      "quantity": 1,
+                      "total_cents": 89900,
+                      "status": "pending"
+                    },
+                    {
+                      "id": "2c9f0b71-5d64-4a0e-9b83-0f27f7f0d003",
+                      "product_id": "6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c003",
+                      "quantity": 4,
+                      "total_cents": 59600,
+                      "status": "cancelled"
+                    }
+                  ]
                 }
               }
             }
@@ -340,7 +380,17 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/Org"
-                  }
+                  },
+                  "example": [
+                    {
+                      "id": "4a8b2d63-9e15-4c70-8d21-0f27f7f0a001",
+                      "name": "Northwind Trading"
+                    },
+                    {
+                      "id": "4a8b2d63-9e15-4c70-8d21-0f27f7f0a002",
+                      "name": "Contoso Rail"
+                    }
+                  ]
                 }
               }
             }
@@ -508,7 +558,27 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/Charge"
-                  }
+                  },
+                  "example": [
+                    {
+                      "id": "7d1e4a95-3c82-4f17-9b06-0f27f7f0f001",
+                      "order_id": "2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001",
+                      "amount_cents": 259800,
+                      "status": "settled"
+                    },
+                    {
+                      "id": "7d1e4a95-3c82-4f17-9b06-0f27f7f0f002",
+                      "order_id": "2c9f0b71-5d64-4a0e-9b83-0f27f7f0d002",
+                      "amount_cents": 89900,
+                      "status": "pending"
+                    },
+                    {
+                      "id": "7d1e4a95-3c82-4f17-9b06-0f27f7f0f003",
+                      "order_id": "2c9f0b71-5d64-4a0e-9b83-0f27f7f0d003",
+                      "amount_cents": 59600,
+                      "status": "refunded"
+                    }
+                  ]
                 }
               }
             }
@@ -700,6 +770,11 @@
             "type": "integer",
             "minimum": 0
           }
+        },
+        "example": {
+          "id": "6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c001",
+          "name": "Aeron chair",
+          "price_cents": 129900
         }
       },
       "ProductInput": {
@@ -749,6 +824,12 @@
             "format": "uri",
             "description": "GET to fetch terminal status + result"
           }
+        },
+        "example": {
+          "id": "charge-7d1e4a95-3c82-4f17-9b06-0f27f7f0f001",
+          "run_id": "019a3f8c-6d21-7c4b-8e55-0f27f7f0e002",
+          "status": "running",
+          "result_url": "/api/charges/7d1e4a95-3c82-4f17-9b06-0f27f7f0f001"
         }
       },
       "CheckoutInput": {
@@ -803,6 +884,13 @@
               "cancelled"
             ]
           }
+        },
+        "example": {
+          "id": "2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001",
+          "product_id": "6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c001",
+          "quantity": 2,
+          "total_cents": 259800,
+          "status": "confirmed"
         }
       },
       "Org": {
@@ -820,6 +908,10 @@
           "name": {
             "type": "string"
           }
+        },
+        "example": {
+          "id": "4a8b2d63-9e15-4c70-8d21-0f27f7f0a001",
+          "name": "Northwind Trading"
         }
       },
       "OrgInput": {
@@ -896,6 +988,12 @@
               "refunded"
             ]
           }
+        },
+        "example": {
+          "id": "7d1e4a95-3c82-4f17-9b06-0f27f7f0f001",
+          "order_id": "2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001",
+          "amount_cents": 259800,
+          "status": "settled"
         }
       }
     }

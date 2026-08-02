@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# Auth-config single-source lint (Phase 0.4 of the auth plan).
+# Auth single-source lint. Two rules, one subject: authentication is defined in
+# exactly one place and enforced by the real stack.
 #
-# The auth config lives exactly once, in the canonical infra/auth tree, and is
-# injected into the Ory umbrella chart at install time (Helm `-f` overlays +
-# `--set-file`; ArgoCD valueFiles + fileParameters). This guard fails CI if any
-# of it is re-inlined back into the chart values, which is how the copies silently
-# diverged before.
+#  1. The auth CONFIG lives exactly once, in the canonical infra/auth tree, and is
+#     injected into the Ory umbrella chart at install time (Helm `-f` overlays +
+#     `--set-file`; ArgoCD valueFiles + fileParameters). This guard fails CI if any
+#     of it is re-inlined back into the chart values, which is how the copies
+#     silently diverged before.
+#  2. The frontend carries no development-only auth CODE (ADR-0029). Local work
+#     against mocked data still logs in for real via the `edge` profile, so a
+#     session bypass, a synthetic session object, or a NODE_ENV branch in the app's
+#     auth path has no reason to exist — and principle 9 predicts what happens to
+#     one that does.
 set -euo pipefail
 cd "$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -36,7 +42,26 @@ for f in \
   fi
 done
 
+# --- 2. No development-only auth code in the frontend (ADR-0029) -------------
+# Scope is the app's authn gate and its auth library — the two places a bypass is
+# actually reachable from. Comments are dropped so this file's own prose, and the
+# ADR pointers in the app, do not trip it.
+AUTH_PATHS=(apps/frontend/src/proxy.ts apps/frontend/src/lib/auth)
+# An environment-conditional branch is only a finding when it is conditioning the
+# SESSION — proxy.ts legitimately relaxes the CSP for `next dev`, which grants
+# nothing. So NODE_ENV counts only alongside an auth word on the same line.
+BYPASS='DEV_AUTH|AUTH_BYPASS|BYPASS_AUTH|dev-?auth|auth-?bypass|fake[-_ ]?session|NODE_ENV.*(session|auth|identity|bypass)|(session|auth|identity|bypass).*NODE_ENV'
+for p in "${AUTH_PATHS[@]}"; do
+  [ -e "$p" ] || continue
+  if hits=$(grep -rniE "$BYPASS" "$p" | grep -vE '^[^:]+:[0-9]+:\s*(//|\*|/\*)'); then
+    echo "✗ development-only auth code in $p — the frontend has ONE auth path and it is the production one (ADR-0029):" >&2
+    echo "$hits" >&2
+    echo "  To develop against mocked data while logged in, use: mise run cluster:edge" >&2
+    fail=1
+  fi
+done
+
 if [ "$fail" -eq 0 ]; then
-  echo "✓ auth config single-source: no inline copies in $VALUES"
+  echo "✓ auth single-source: no inline config in $VALUES, no dev-only auth code in the frontend"
 fi
 exit "$fail"

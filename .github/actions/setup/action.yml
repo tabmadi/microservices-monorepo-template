@@ -1,0 +1,33 @@
+# Shared toolchain setup for every workflow: mise (with its tool cache) and,
+# optionally, the Go build + module cache. Defined exactly once here.
+#
+# A composite action, not a reusable `workflow_call` workflow: a called workflow
+# runs as its OWN job on its OWN runner, so it cannot install a toolchain that a
+# later step in the calling job would see. Composite steps splice into the caller.
+# Checkout stays in the caller — the runner needs the repo on disk before it can
+# resolve `./.github/actions/setup` at all, and fetch-depth differs per workflow.
+name: setup
+description: Install the mise toolchain (and optionally the Go build cache).
+
+inputs:
+  go-cache:
+    description: Restore and save the shared Go build + module cache.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: jdx/mise-action@v2
+      with:
+        install: true
+        cache: true
+
+    # One key across test.yml and build.yml so they share a single cache entry
+    # instead of each warming their own copy of the same compiled packages.
+    - if: inputs.go-cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: go-${{ runner.os }}-${{ hashFiles('go.sum') }}

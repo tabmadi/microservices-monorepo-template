@@ -21,9 +21,20 @@ worker:
     tag: ""             # SAME sha as the server image (dev/staging)
     digest: ""          # SAME digest as the server image (prod)
   replicas: 1
+  # ADR-0020, sized from measurement (2026-07-26, ADR-0027 load suite).
+  #
+  # The cpu LIMIT that used to be here (500m) is deliberately GONE. Measured peaks:
+  # catalog-server 118m, orders-worker 174m, payment-worker 122m — but those were at
+  # only ~128 req/s, so 500m was within reach of a real workload, and a throttled Go
+  # service shows up as tail latency with no error and no OOM to point at. CPU
+  # contention is handled by the request below plus the `product` PriorityClass.
+  #
+  # The memory REQUEST went 64Mi -> 128Mi because 64Mi was simply wrong:
+  # payment-server measured 86Mi, i.e. 134% of its own request, which lets the
+  # scheduler overcommit the node and then evict it.
   resources:
-    requests: { cpu: "50m",  memory: "64Mi" }
-    limits:   { cpu: "500m", memory: "256Mi" }
+    requests: { cpu: "100m", memory: "128Mi" }
+    limits:   { memory: "384Mi" }
 
   # Graceful drain on rollout (ADR-0006). On SIGTERM the worker stops polling and
   # waits up to stopTimeoutSeconds for its in-flight Activities to finish; the SDK
@@ -69,9 +80,20 @@ server:
   replicas: 2
   port: 8080
   adminPort: 9090       # pprof + livez/readyz + metrics (ADR-0011)
+  # ADR-0020, sized from measurement (2026-07-26, ADR-0027 load suite).
+  #
+  # The cpu LIMIT that used to be here (500m) is deliberately GONE. Measured peaks:
+  # catalog-server 118m, orders-worker 174m, payment-worker 122m — but those were at
+  # only ~128 req/s, so 500m was within reach of a real workload, and a throttled Go
+  # service shows up as tail latency with no error and no OOM to point at. CPU
+  # contention is handled by the request below plus the `product` PriorityClass.
+  #
+  # The memory REQUEST went 64Mi -> 128Mi because 64Mi was simply wrong:
+  # payment-server measured 86Mi, i.e. 134% of its own request, which lets the
+  # scheduler overcommit the node and then evict it.
   resources:
-    requests: { cpu: "50m",  memory: "64Mi" }
-    limits:   { cpu: "500m", memory: "256Mi" }
+    requests: { cpu: "100m", memory: "128Mi" }
+    limits:   { memory: "384Mi" }
 
 # Database migrations (ADR-0007) run as a dbmate initContainer on the server pod,
 # from the service image itself (it bakes the static dbmate binary + /db/migrations).
@@ -111,6 +133,11 @@ ingress:
 secrets:
   envFrom: []           # list of Secret names mounted via envFrom
   files: []             # list of {name, mountPath, items} mounted as volumes
+
+# Eviction order (ADR-0020). `product` sits below `platform-critical`, so under node
+# pressure a product service is shed before the Postgres/Temporal/edge it needs —
+# which is the only ordering that can actually recover. Batch Jobs go below this.
+priorityClassName: product
 
 # Extra env vars, merged into both server and worker.
 env: {}

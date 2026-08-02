@@ -71,7 +71,15 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        /** @description Handle to an async Temporal workflow run. */
+        /**
+         * @description Handle to an async Temporal workflow run.
+         * @example {
+         *       "id": "charge-7d1e4a95-3c82-4f17-9b06-0f27f7f0f001",
+         *       "run_id": "019a3f8c-6d21-7c4b-8e55-0f27f7f0e002",
+         *       "status": "running",
+         *       "result_url": "/api/charges/7d1e4a95-3c82-4f17-9b06-0f27f7f0f001"
+         *     }
+         */
         WorkflowHandle: {
             id: string;
             run_id: string;
@@ -93,7 +101,15 @@ export interface components {
         RefundInput: {
             reason: string;
         };
-        /** @description A payment charge against an order. */
+        /**
+         * @description A payment charge against an order.
+         * @example {
+         *       "id": "7d1e4a95-3c82-4f17-9b06-0f27f7f0f001",
+         *       "order_id": "2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001",
+         *       "amount_cents": 259800,
+         *       "status": "settled"
+         *     }
+         */
         Charge: {
             /** Format: uuid */
             id: string;

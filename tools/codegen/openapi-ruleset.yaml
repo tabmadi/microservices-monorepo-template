@@ -5,8 +5,9 @@ extends:
 
 rules:
   # Style
-  # Specs are codegen contracts (ogen), not docs — per-property examples add
-  # maintenance burden to every scaffolded spec for no codegen value. Off.
+  # Per-PROPERTY examples stay off: they are maintenance on every scaffolded field
+  # for no consumer. Whole-response examples are the opposite — see
+  # response-example-required below.
   oas3-missing-example: off
   operation-operationId: error
   operation-tag-defined: error
@@ -40,6 +41,25 @@ rules:
       function: oasCamelCaseProperties
       functionOptions:
         type: snake
+
+  # Response examples are load-bearing, not documentation garnish (ADR-0029): the
+  # API mock serves them verbatim to the UI development loop, and the Scalar
+  # developer portal renders the same values — one investment, two consumers. Without
+  # one, a mocked response is schema-generated: an unconstrained array legitimately
+  # becomes `[]`, and an open object grows fields the real API never returns.
+  #
+  # The check runs on the RESOLVED document, so a $ref to a component schema that
+  # carries an `example` satisfies it; an inline array schema needs its own (the
+  # item's example says nothing about how many rows come back). 204s have no content
+  # and are therefore out of scope by construction.
+  response-example-required:
+    description: every 2xx response schema must carry an `example` — the API mock serves it and the developer portal renders it
+    given: $.paths.*[get,post,put,patch,delete].responses['200','201','202'].content.*.schema
+    resolved: true
+    severity: error
+    then:
+      field: example
+      function: truthy
 
   # Every path must have a tag for grouping
   must-have-tag:

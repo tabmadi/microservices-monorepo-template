@@ -101,11 +101,27 @@ run = "kubectl --context k3d-${CLUSTER:-platform} apply -f infra/local/deps.yaml
 run = "bash scripts/cluster-full.sh"
 
 [tasks."cluster:edge"]
-# Re-apply the host-only frontend edge glue (catch-all `/` → host `next dev` :3000,
-# Kratos public API, and the docker-bridge EndpointSlice). Not GitOps-managed, so a
-# stop/start or reboot loses it → Traefik 404 at /. cluster:ensure/heal/full run this
-# automatically; invoke it directly to re-stamp without a full restart.
+# The `edge` profile (ADR-0016, ADR-0029): the tier for building authenticated UI.
+# Traefik + cert-manager + Kratos + Oathkeeper + Postgres are REAL and the frontend
+# runs natively on :3000, with its production auth path and no development-only auth
+# code. Temporal, OpenFGA, CNPG, observability and ArgoCD are absent.
+#
+# INCOMPLETE: the API mock that replaces the application services on /api is not
+# wired up yet, so nothing serves /api on this tier. Logging in works end to end;
+# any route that fetches application data does not. See docs/dev-loop.md.
 run = "bash scripts/cluster-edge.sh"
+
+[tasks."cluster:edge-glue"]
+# Re-stamp the host-only frontend edge glue: the last-resort catch-all `/` → host
+# `next dev` :3000 and the docker-bridge EndpointSlice behind it. Per-machine state
+# that cannot be GitOps-managed (the bridge IP is discovered at runtime and moves
+# across restarts), so a stop/start or reboot loses it → Traefik 404 at /.
+#
+# Internal plumbing, not a tier: cluster:ensure (start), cluster:heal (reboot) and
+# cluster:edge all run it automatically. Hidden for the same reason cluster:cilium
+# is — invoke it by hand only to self-heal a 404/502 at / without a full restart.
+hide = true
+run = "bash scripts/cluster-edge-glue.sh"
 
 [tasks."cluster:stop"]
 # Stops the cluster but KEEPS it (image cache + volumes survive) so the next
@@ -158,31 +174,30 @@ run = "kubectl --context k3d-${CLUSTER:-platform} -n argocd scale statefulset/ar
 # Long-running — use a separate terminal. See docs/dev-loop.md.
 run = "bash scripts/dev-forward.sh"
 
+[tasks."dev:frontend"]
+# The host-run `next dev` the local edge routes `/` to (ADR-0014/0016). Long-running
+# — use a separate terminal. Two env vars are what make a host process behave like
+# the in-cluster frontend; see docs/dev-loop.md:
+#   EDGE_ORIGIN                 where server components fetch — the edge, not a cluster
+#                               DNS name the host cannot resolve; the /api IngressRoutes
+#                               match on Host(dev.localtest.me), so it is the public
+#                               origin. next.config.mjs also derives the server-action
+#                               CSRF allowlist from it.
+#   NODE_TLS_REJECT_UNAUTHORIZED  the local wildcard cert is self-signed by the
+#                               SelfSigned ClusterIssuer (a leaf, not a CA), so it
+#                               cannot be trusted via NODE_EXTRA_CA_CERTS. Local only:
+#                               deployed envs get Let's Encrypt certs and set neither.
+dir = "apps/frontend"
+env = { EDGE_ORIGIN = "https://dev.localtest.me:8443", NODE_TLS_REJECT_UNAUTHORIZED = "0" }
+run = "bun run next dev -H 0.0.0.0"
+
 [tasks."db:migrate"]
 run = "bash scripts/db-migrate.sh"
 
-# ── OpenAPI mock ──────────────────────────────────────────────────────────────
-[tasks."prism:start"]
-# Discover and validate every canonical service OpenAPI source, build the ignored
-# runtime aggregate, and wait until the unified Prism API accepts connections.
-run = "bash scripts/prism.sh start"
-
-[tasks."prism:stop"]
-run = "bash scripts/prism.sh stop"
-
-[tasks."prism:logs"]
-run = "bash scripts/prism.sh logs"
-
-[tasks."prism:validate"]
-# Validate every source contract and the collision-safe runtime aggregation
-# without leaving a Prism container running.
-run = "bash scripts/prism.sh validate"
-
-[tasks."prism:frontend"]
-# Start the unified mock, wait for readiness, then run the frontend with its
-# development-only same-origin rewrite and auth bypass enabled.
-depends = ["prism:start"]
-run = "PRISM_MOCK_ENABLED=true DEV_AUTH_BYPASS=true API_BASE_URL=http://localhost:4010 bun run --cwd apps/frontend dev"
+[tasks."auth:seed"]
+# Seed the committed deterministic test identities (ADR-0018) into a running Kratos.
+# cluster:edge does this for you; run it alone after a Kratos reinstall.
+run = "bash scripts/identity-seed.sh"
 
 # ── Code generation ───────────────────────────────────────────────────────────
 [tasks.gen]
@@ -241,7 +256,7 @@ run = "git ls-files -z '*.sh' | xargs -0 shfmt -w -i 2"
 
 # ── Lint ──────────────────────────────────────────────────────────────────────
 [tasks.lint]
-depends = ["lint:go", "lint:gostyle", "lint:ts", "lint:sql", "lint:openapi", "lint:api-audience", "lint:floating-tags", "lint:md", "lint:shell", "lint:node-scope", "lint:auth-inline", "lint:authz", "lint:log-vocab"]
+depends = ["lint:go", "lint:gostyle", "lint:ts", "lint:sql", "lint:openapi", "lint:api-audience", "lint:floating-tags", "lint:md", "lint:shell", "lint:node-scope", "lint:auth-inline", "lint:authz", "lint:log-vocab", "lint:resource-governance"]
 
 [tasks."lint:go"]
 run = "golangci-lint run ./..."
@@ -264,6 +279,16 @@ run = "bash scripts/lint-openapi.sh"
 # service is edge-exposed (public ⇔ has an /api route). Spec-less control-plane
 # services (authz) are exempt. Prevents the finding-D omission from recurring.
 run = "go run ./tools/lint-api-audience"
+
+[tasks."lint:resource-governance"]
+# ADR-0020 gate: renders every chart (each service separately) and checks the
+# declared resources against the guardrails in infra/helm/platform/resource-governance
+# BEFORE they reach a cluster — LimitRange floors that would REJECT a pod, containers
+# with no requests/memory limit and no namespace default, unsanctioned CPU limits, and
+# ResourceQuota headroom. Catches the admission-time, cluster-wide failures that are
+# invisible in review: a 16Mi floor here was one apply away from rejecting Cilium's
+# CNI initContainer and taking the node's networking with it.
+run = "go run ./tools/lint-resource-governance"
 
 [tasks."lint:floating-tags"]
 run = "bash scripts/lint-floating-tags.sh"
@@ -288,8 +313,10 @@ run = "bash scripts/lint-log-vocab.sh"
 run = "bash scripts/lint-node-scope.sh"
 
 [tasks."lint:auth-inline"]
-# Auth config single-source guard (ADR-0009/0010): fails if kratos/oathkeeper
-# config is re-inlined into the Ory chart values instead of living in infra/auth/*.
+# Auth single-source guard (ADR-0009/0010/0029): fails if kratos/oathkeeper config
+# is re-inlined into the Ory chart values instead of living in infra/auth/*, or if
+# the frontend grows development-only auth code (a session bypass in proxy.ts or
+# src/lib/auth/ — local UI work logs in for real via cluster:edge).
 run = "bash scripts/lint-auth-inline.sh"
 
 [tasks."lint:authz"]
@@ -333,8 +360,21 @@ depends = ["test"]
 depends = ["build"]
 
 [tasks."ci:gen"]
-# Drift check: fail if regeneration changes anything.
-run = "mise run gen && git diff --exit-code"
+# Drift check: regenerate AND reformat, then fail if anything changed.
+#
+# Formatting belongs here rather than in `lint` because the linters are analysers
+# (golangci-lint run, biome lint, rumdl check, shellcheck) and none of them rewrite
+# code — a correctly-analysed-but-misformatted file passes `mise run lint` cleanly.
+# Only the formatters can tell, and they tell by rewriting, which is exactly the
+# shape this drift check already handles for generated code.
+#
+# The single definition behind ci-drift.yml and the lefthook gen-drift hook: run it
+# locally to reproduce that CI job exactly.
+run = """
+mise run gen
+mise run format
+git diff --exit-code
+"""
 
 # ── Deploy to cluster (working-tree overrides) ────────────────────────────────
 [tasks."service:deploy"]
@@ -381,6 +421,33 @@ run = "mise run -C e2e test"
 
 [tasks."e2e:smoke"]
 run = "mise run -C e2e test:smoke"
+
+# ── Load & performance tests ──────────────────────────────────────────────────
+# Thin delegates into the k6 island, same reason as the e2e ones above: the k6
+# pin lives in perf/.mise.toml and mise tools flow down a config tree, never up.
+# These are NOT part of `test`, `check` or `ci:affected` (ADR-0027) — they answer
+# "what does it cost and where does it break", not "is it correct", and they need
+# a running cluster:full.
+[tasks.perf]
+# The steady baseline: nightly + pre-release.
+run = "mise run -C perf load"
+
+[tasks."perf:smoke"]
+# ~30s. Proves the scenarios still run; the label-gated per-PR lane.
+run = "mise run -C perf smoke"
+
+[tasks."perf:stress"]
+# Ramp to saturation. Thresholds are expected to break — the finding is where.
+run = "mise run -C perf stress"
+
+[tasks."perf:soak"]
+# ~30min sustained, for leak detection.
+run = "mise run -C perf soak"
+
+[tasks."perf:seed"]
+# Bulk catalog data so the read path is measured against a realistic table.
+#   mise run perf:seed -- 50000      mise run perf:seed -- --clean
+run = "mise run -C perf seed"
 
 # ── Maintenance ───────────────────────────────────────────────────────────────
 [tasks.upgrade]

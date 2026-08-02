@@ -59,125 +59,50 @@ mise run service:deploy -- catalog       # build → k3d image import → helm u
 mise run service:undeploy -- catalog     # helm uninstall
 ```
 
+## Building UI: the `edge` profile
+
+The inner loop runs **one** service natively, and a frontend is nobody's single
+client — one panel screen fans out across `/products`, `/orders`, `/orgs`, and
+`/charges`. The full platform serves them for about 7 GiB, none of which renders a
+table. [ADR-0029](adr/0029-api-mocking-and-ui-dev-loop.md) fills that gap by
+inverting the usual split: **the edge and the identity stack stay real, the
+application services are replaced by their own OpenAPI contract.**
+
+```sh
+mise run cluster:edge   # Traefik + cert-manager + Kratos + Oathkeeper + Postgres
+cp apps/frontend/.env.example apps/frontend/.env.local
+bun run --cwd apps/frontend dev                          # host :3000, reached through the edge
+```
+
+Then open <https://dev.localtest.me:8443/> and **log in for real** — the task seeds
+the committed test identities from `e2e/fixtures/identities.ts` (the same ones the
+e2e suite uses; `mise run auth:seed` re-seeds alone), and a Kratos session lasts 7
+days, so this is a weekly event, not a per-run one. What you get is the production
+authentication path: real cookie, real CSRF, real expiry, real `proxy.ts` redirect on
+a gated route, and every `/api` call decided by the same Oathkeeper access rules
+production runs. The frontend carries **no** development-only auth code — no bypass, no
+fake session, no `NODE_ENV` branch in the session path — and `mise run
+lint:auth-inline` fails the build if one appears.
+
+> **The API mock is not wired up yet.** The auth half of this tier is complete and
+> usable today; the half that serves application data from the committed
+> `internal.json` projection is not, so any route that fetches data will fail until
+> it lands. Until then, real data means `cluster:full`.
+
+**What this tier cannot tell you.** It is stateless: a create is not reflected by
+the next read, a `WorkflowHandle`'s `result_url` polls nothing, and no authorization
+decision is real (the mock returns the same rows to everyone — for building a table,
+ownership-correct rows teach you nothing). Persistence, Temporal behaviour, and
+authorization are asserted against real services on `cluster:full`, which is also
+where the e2e suite runs: the mock is forbidden in `mise run test`, `ci:affected`,
+and the e2e and visual suites ([ADR-0018](adr/0018-testing-strategy.md)).
+
 ## Teardown
 
 ```sh
 mise run cluster:stop        # stops the cluster, keeps the image cache + volumes
 mise run cluster:delete       # deletes the cluster (reclaims disk, forces a clean recreate)
 ```
-
-## Frontend development with Prism
-
-[Stoplight Prism](https://github.com/stoplightio/prism) is the stateless
-development mock for the application APIs. On every start it discovers and
-validates all canonical `services/*/openapi.yaml` sources, builds an ignored
-runtime-only aggregate, and starts one Prism server from that aggregate. Source
-contracts remain the only source of truth. The generated developer-portal
-projections are not inputs, and no mock routes or response files are maintained.
-
-```sh
-mise run prism:start       # discover, aggregate, and start the unified mock API
-mise run prism:frontend    # start unified Prism, wait, then start Next.js
-mise run prism:logs        # follow readable Prism request/validation logs
-mise run prism:validate    # validate sources and aggregation; leave Prism stopped
-mise run prism:stop        # stop and remove the Prism container
-```
-
-Prism listens at <http://localhost:4010>. `prism:frontend` sets
-`PRISM_MOCK_ENABLED=true`, `DEV_AUTH_BYPASS=true`, and
-`API_BASE_URL=http://localhost:4010`. Browser code continues to request the
-established same-origin `/api` prefix; a development-only Next.js rewrite
-forwards those requests to Prism. Server components use `API_BASE_URL` directly.
-Starting the frontend normally leaves both development switches disabled and
-restores the existing Kratos and real-gateway configuration. The equivalent
-opt-in values are documented in `apps/frontend/.env.example`.
-
-### Development authentication
-
-The Prism frontend command bypasses the protected-page Kratos cookie check so
-`/panel` and `/devportal` can be exercised without running the stateful identity
-stack. It also makes the existing server-side `whoami()` helper return this
-deterministic synthetic session:
-
-```text
-identity: 00000000-0000-4000-8000-000000000001
-email:    dev@example.com
-roles:    admin, operator
-aal:      aal2
-```
-
-There is no password or fake login form: the identity is active whenever
-`DEV_AUTH_BYPASS=true` in a `next dev` process. The bypass requires both that
-variable and `NODE_ENV=development`; setting it on a production Next.js process
-has no effect. Disable it by starting the frontend normally or unsetting
-`DEV_AUTH_BYPASS`. To use Prism while testing real Kratos, start Prism separately
-with `mise run prism:start`, then run Next.js with only
-`PRISM_MOCK_ENABLED=true API_BASE_URL=http://localhost:4010`.
-
-This narrow bypass is preferred to a Mock Kratos server because it keeps Kratos
-as the sole identity provider and does not duplicate browser-flow, CSRF, cookie,
-recovery, verification, or MFA state machines. The trade-off is deliberate:
-development mode proves authenticated application rendering and Prism API
-integration, but it cannot test login/logout, session expiry, redirects, cookie
-attributes, CSRF, identity persistence, OpenFGA decisions, or assurance-level
-transitions. Use the full local platform for those behaviors.
-
-Prism's CLI accepts one OpenAPI document per mock-server process. This repository
-has no canonical combined source: each HTTP service owns its contract at
-`services/<service>/openapi.yaml`. The combined
-`apps/frontend/public/devportal/openapi/internal.json` exists only as a generated
-Scalar developer-portal projection and is never read by Prism. Instead,
-the pinned Redocly CLI `join` command creates `.runtime/prism/openapi.yaml` from
-the canonical sources each time Prism starts. `.runtime/` is Git-ignored, the
-aggregate is replaced only after validation, and it is neither committed nor
-exposed by the frontend. Adding a new `services/<service>/openapi.yaml`
-automatically includes it on the next start.
-
-Redocly deduplicates identical shared components and rewrites their references.
-A duplicate operation, incompatible component definition, or other unsafe merge
-conflict fails startup with the affected input files instead of silently
-overwriting a contract. Resolve such ownership conflicts in the canonical
-contracts; the mock workflow does not invent route prefixes or maintain custom
-merge logic.
-
-Dynamic mode is enabled on the Prism server, so JSON responses are generated
-from the current schemas without a `Prefer: dynamic=true` header. Generated
-responses are stateless: creating or updating a resource does not affect a later
-read. Prism's default CORS support remains enabled for direct browser requests.
-Contract violations are intentional development feedback: unknown routes return
-`404`, unsupported methods return `405`, unsupported request media types return
-`415`, and schema-invalid requests return `422`.
-
-Authentication remains outside this mock. Prism does not reproduce Kratos
-sessions, cookies, CSRF checks, redirects, or stateful login and registration
-flows. Use the full local platform when those behaviors are under test.
-
-Known limitations of the unchanged contracts:
-
-- `GET /products`, `/orders`, `/orgs`, and `/charges` have array schemas without
-  `minItems`, so dynamic responses can legitimately be empty. Object schemas
-  generally permit additional properties, so generated records can also contain
-  fields not listed under `properties`. This can make table demos sparse or
-  noisy. A future contract change could constrain array sizes and object
-  extensibility where that matches the real API.
-- `POST /orders`, `POST /charges`, and the cancel/refund operations return a
-  `WorkflowHandle` whose optional `result_url` is only constrained as a URI.
-  Prism can therefore generate a URL that is not a mock route, so workflow
-  polling is not realistic. A future contract change could constrain or document
-  this value more precisely.
-- Every create, update, delete, checkout, cancel, refund, and workflow operation
-  is stateless under Prism. A later read does not reflect the mutation, and no
-  workflow progresses. Exercise persistence and Temporal behavior against the
-  real services.
-- The application contracts contain no OpenAPI security requirements; edge
-  authentication is defined outside OpenAPI. Prism therefore does not issue the
-  edge's authentication `401` responses. Use the full local edge for auth and
-  authorization testing.
-- The internal projection intentionally excludes cluster-only operations such as
-  the authz control-plane API and the Kratos `identity-created` webhook. Prism
-  does not use that projection, so canonical cluster-only operations are present
-  in the unified mock when their source specifications define them. Authentication
-  behavior surrounding those operations remains outside the mock.
 
 ## After a reboot
 
@@ -207,8 +132,31 @@ The browser test is the acceptance gauge — a rendered, authenticated dashboard
 Hubble UI, Temporal) is the proof the whole stack underneath is wired. A Go/shell **preflight
 readiness** check runs first so a red e2e reads "infra down" vs "app broken". The suite ships a
 committed deterministic test identity (an AAL1 user + an AAL2 operator); there is nothing to seed
-by hand. Playwright's runner is Node — the **one** sanctioned Node tool in the repo
-([ADR-0001](adr/0001-language-and-runtime.md)), scoped to `e2e/` and CI; everything else stays on Bun.
+by hand. Playwright's runner is Node — one of the three sanctioned Node exceptions
+([ADR-0001](adr/0001-language-and-runtime.md)), all of them vendored third-party
+tools rather than code we author: this runner (scoped to `e2e/` and CI), the Lowdefy
+console image, and the API mock container. Everything we write stays on Bun.
+
+## Load & performance tests
+
+E2e answers *is it correct* at a load of about one user. *What does it cost and where does it
+break* is [ADR-0027](adr/0027-load-and-performance-testing.md): **k6** driving the edge from the
+repo-root `perf/` workspace, against the same `cluster:full`.
+
+```sh
+mise run perf:seed            # bulk catalog rows, so the read path has a realistic table
+mise run perf:smoke           # ~30s — are the scenarios still wired to the API?
+mise run perf                 # the steady baseline (~7min), nightly + pre-release
+mise run perf:stress          # ramp to saturation; thresholds are meant to break here
+```
+
+Metrics leave k6 over OTLP into the cluster's collector, so a run shows up in Grafana on the
+**`Load test`** dashboard next to the pod CPU/memory it caused — that correlation is the point.
+k6 runs its own embedded JS engine, so `perf/` adds **no** Node and no npm; the sanctioned Node
+island stays `e2e/` alone. Full guidance, including how to read the shapes, is
+[docs/perf/runbook.md](perf/runbook.md).
+
+These suites are not part of `mise run test` or `check`, and never implicitly gate a merge.
 
 ## Formatting & linting
 
@@ -353,23 +301,41 @@ Kratos at `…/auth/login`; register/login there and the redirect returns you to
 gated page. The Kratos session cookie is scoped to `dev.localtest.me` (parent
 domain), so one login covers the edge and every `*.dev.localtest.me` subdomain. The landing page and `/auth` UI are
 served by a host-run `next dev`
-(run `next dev -H 0.0.0.0` on the host — the dev server is not in-cluster), wired
+(run `mise run dev:frontend` on the host — the dev server is not in-cluster), wired
 through `infra/local/edge-auth.yaml`.
 
-**There is no seeded user** — Kratos starts with an empty identity store. Create
-one at <https://dev.localtest.me:8443/auth/register> with any email and a password
+Kratos starts with an empty identity store. Either seed the committed test
+identities — `mise run auth:seed`, the same pair the e2e suite and the `edge`
+profile use (`e2e/fixtures/identities.ts`) — or register your own at
+<https://dev.localtest.me:8443/auth/register> with any email and a password
 that clears the policy (≥ 12 chars and not similar to the email, so `password123`
-is rejected); then log in with it. Email
+is rejected). Only self-service registration fires the `after` web_hook that creates
+a personal org; admin-seeded identities skip it. Email
 verification is configured but the local SMTP sink isn't wired up, so verification
 mail isn't delivered — login doesn't require it.
 
-Start the host `next dev` with **`APP_ORIGIN=dev.localtest.me`** so the login and
-registration **server actions** pass Next's Origin/CSRF check (it feeds
-`serverActions.allowedOrigins` in `next.config.mjs`). Without it, form submits from
-the edge origin are rejected as cross-origin:
+Start the host dev server with **`mise run dev:frontend`**, which is `next dev -H
+0.0.0.0` plus the two env vars a host process needs to behave like the in-cluster
+frontend:
+
+| Env var                            | Why                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `EDGE_ORIGIN=https://dev.localtest.me:8443` | The environment's edge origin. **Server components** fetch through it (`src/lib/server-fetch/server.ts`) — it is the edge, not a service: the `/api/<resource>` IngressRoutes match on `Host(dev.localtest.me)` and Oathkeeper injects identity there. `next.config.mjs` also derives the **server-action** CSRF allowlist from it. Unset, `/panel/products` throws at the first fetch. |
+| `NODE_TLS_REJECT_UNAUTHORIZED=0`   | The local wildcard cert is signed by the SelfSigned `ClusterIssuer` — a self-signed leaf, not a CA — so Node cannot be taught to trust it via `NODE_EXTRA_CA_CERTS`. Local only; deployed envs have Let's Encrypt certs and set neither var.                                                                     |
+
+Starting the dev server another way — an IDE run config, a debugger — needs the
+same env: copy `apps/frontend/.env.example` to `.env.local`, which Next loads
+before evaluating `next.config.mjs`.
+
+Browser-side calls need no such variable: `client.ts` uses a relative `/api`, which
+is the same origin by construction ([ADR-0017](adr/0017-url-and-domain-structure.md)).
+A server-side `fetch` has no document to resolve a relative URL against, so the
+origin has to be named once — and it must be configuration, not the request's
+`Host` header, because that header is client-controlled and this fetcher forwards
+the user's session cookie.
 
 ```sh
-APP_ORIGIN=dev.localtest.me next dev -H 0.0.0.0
+mise run dev:frontend
 ```
 
 The full Kratos self-service set is served under `/auth/` — `login`, `register`,

@@ -68,7 +68,15 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        /** @description Handle to an async Temporal workflow run. */
+        /**
+         * @description Handle to an async Temporal workflow run.
+         * @example {
+         *       "id": "checkout-2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001",
+         *       "run_id": "019a3f8c-6d21-7c4b-8e55-0f27f7f0e001",
+         *       "status": "running",
+         *       "result_url": "/api/orders/2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001"
+         *     }
+         */
         WorkflowHandle: {
             id: string;
             run_id: string;
@@ -86,7 +94,16 @@ export interface components {
             product_id: string;
             quantity: number;
         };
-        /** @description A customer order. */
+        /**
+         * @description A customer order.
+         * @example {
+         *       "id": "2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001",
+         *       "product_id": "6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c001",
+         *       "quantity": 2,
+         *       "total_cents": 259800,
+         *       "status": "confirmed"
+         *     }
+         */
         Order: {
             /** Format: uuid */
             id: string;

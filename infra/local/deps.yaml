@@ -3,25 +3,41 @@
 # so a service (run natively on the host) has Postgres, Temporal and OpenFGA to talk to.
 # The production-grade versions (CNPG, the Temporal Helm chart, operator-backed
 # OpenFGA) are exercised by ArgoCD in staging/prod, not here.
+#
+# Every resource carries `local.platform/component`, so a profile (ADR-0016) can
+# apply a SLICE of this file rather than fork it — `kubectl apply -f` honours
+# `--selector`. cluster:lite applies all of it; the `edge` profile (ADR-0029) takes
+# `in (base,postgres)` alone, because Temporal and OpenFGA render no page.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: platform
+  labels: { local.platform/component: base }
 ---
 # --- Postgres (plain image, ephemeral) -------------------------------------
+# `kratos` is here for the `edge` profile: that tier runs the real Kratos against
+# this stand-in instead of CNPG (ADR-0029). Unused by cluster:lite, and free — the
+# pod has no volume, so initdb re-runs on every start.
 apiVersion: v1
 kind: ConfigMap
-metadata: { name: postgres-initdb, namespace: platform }
+metadata:
+  name: postgres-initdb
+  namespace: platform
+  labels: { local.platform/component: postgres }
 data:
   init.sql: |
     CREATE DATABASE orders;
     CREATE DATABASE catalog;
     CREATE DATABASE orgs;
     CREATE DATABASE payment;
+    CREATE DATABASE kratos;
 ---
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: postgres, namespace: platform }
+metadata:
+  name: postgres
+  namespace: platform
+  labels: { local.platform/component: postgres }
 spec:
   replicas: 1
   selector: { matchLabels: { app: postgres } }
@@ -47,7 +63,10 @@ spec:
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: postgres, namespace: platform }
+metadata:
+  name: postgres
+  namespace: platform
+  labels: { local.platform/component: postgres }
 spec:
   selector: { app: postgres }
   ports: [{ port: 5432, targetPort: 5432 }]
@@ -55,7 +74,10 @@ spec:
 # --- Temporal dev server (in-memory, includes Web UI on 8233) ---------------
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: temporal, namespace: platform }
+metadata:
+  name: temporal
+  namespace: platform
+  labels: { local.platform/component: temporal }
 spec:
   replicas: 1
   selector: { matchLabels: { app: temporal } }
@@ -75,7 +97,10 @@ spec:
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: temporal, namespace: platform }
+metadata:
+  name: temporal
+  namespace: platform
+  labels: { local.platform/component: temporal }
 spec:
   selector: { app: temporal }
   ports:
@@ -85,7 +110,10 @@ spec:
 # --- OpenFGA (in-memory datastore, fixed dev preshared key) -----------------
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: openfga, namespace: platform }
+metadata:
+  name: openfga
+  namespace: platform
+  labels: { local.platform/component: openfga }
 spec:
   replicas: 1
   selector: { matchLabels: { app: openfga } }
@@ -103,7 +131,10 @@ spec:
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: openfga, namespace: platform }
+metadata:
+  name: openfga
+  namespace: platform
+  labels: { local.platform/component: openfga }
 spec:
   selector: { app: openfga }
   ports: [{ port: 8080, targetPort: 8080 }]
@@ -111,20 +142,32 @@ spec:
 # --- Per-service DATABASE_URL secrets (consumed via secrets.envFrom) --------
 apiVersion: v1
 kind: Secret
-metadata: { name: orders-db, namespace: platform }
+metadata:
+  name: orders-db
+  namespace: platform
+  labels: { local.platform/component: db-secrets }
 stringData: { DATABASE_URL: "postgres://dev:dev@postgres:5432/orders?sslmode=disable" }
 ---
 apiVersion: v1
 kind: Secret
-metadata: { name: catalog-db, namespace: platform }
+metadata:
+  name: catalog-db
+  namespace: platform
+  labels: { local.platform/component: db-secrets }
 stringData: { DATABASE_URL: "postgres://dev:dev@postgres:5432/catalog?sslmode=disable" }
 ---
 apiVersion: v1
 kind: Secret
-metadata: { name: orgs-db, namespace: platform }
+metadata:
+  name: orgs-db
+  namespace: platform
+  labels: { local.platform/component: db-secrets }
 stringData: { DATABASE_URL: "postgres://dev:dev@postgres:5432/orgs?sslmode=disable" }
 ---
 apiVersion: v1
 kind: Secret
-metadata: { name: payment-db, namespace: platform }
+metadata:
+  name: payment-db
+  namespace: platform
+  labels: { local.platform/component: db-secrets }
 stringData: { DATABASE_URL: "postgres://dev:dev@postgres:5432/payment?sslmode=disable" }

@@ -1,0 +1,70 @@
+# Shared activity gate for the nightly cluster:full suites (e2e.yml, perf.yml).
+#
+# Both nightlies cost a ~17min full-platform bring-up. Re-running them against a
+# commit that already passed last night buys nothing: the code is identical, so a
+# red is either flake or upstream drift, and a green is a result you already have.
+# On a project that pauses for a few weeks that is every single night.
+#
+# This IS a reusable `workflow_call` workflow rather than a composite action,
+# because it is a whole job with an output that two workflows gate on — the case
+# workflow_call is actually for. Toolchain setup, which must splice into a caller's
+# job, is a composite action instead (.github/actions/setup).
+name: nightly-gate
+
+on:
+  workflow_call:
+    outputs:
+      run:
+        description: "'true' when the nightly suite should proceed."
+        value: ${{ jobs.gate.outputs.run }}
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      # Full history: --since needs commits to look at, and a shallow clone has one.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: check
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # Anything but the cron is someone explicitly asking for this suite.
+          if [ "$EVENT" != schedule ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 26h, not 24: GitHub queues cron runs on a shared pool and starts them
+          # late by a variable amount (this repo has seen 03:00 fire at 05:52 and
+          # 06:09). A 24h window would silently drop commits into the gap between a
+          # late run and the next one.
+          if [ -n "$(git log --since='26 hours ago' --oneline)" ]; then
+            echo "→ new commits since the last nightly; running the suite." >> "$GITHUB_STEP_SUMMARY"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Monthly floor. Code standing still does not mean the world does: base
+          # images, Helm charts, and registry contents move underneath an unchanged
+          # commit, and the 1st-of-the-month run is what catches that on a dormant
+          # repo. Day-of-month rather than a weekday so it stays one run per month
+          # regardless of how the calendar falls.
+          if [ "$(date -u +%d)" = 01 ]; then
+            echo "→ no new commits, but it is the 1st; running the monthly floor." >> "$GITHUB_STEP_SUMMARY"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "✓ no commits in the last 26h — skipping tonight's bring-up." >> "$GITHUB_STEP_SUMMARY"
+          echo "run=false" >> "$GITHUB_OUTPUT"

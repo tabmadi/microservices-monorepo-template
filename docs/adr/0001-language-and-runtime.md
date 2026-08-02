@@ -41,9 +41,10 @@ In priority order:
 - **Sanctioned escape hatches:**
   - **Rust** for services with measured CPU/latency requirements Go cannot meet, or for blockchain components whose canonical libraries are Rust-native.
   - **Python** for ML/data services where the Python scientific ecosystem is the reason the service exists. Never permitted for general API services.
-  - **Node.js** solely to run vendored third-party tools that ship as Node programs — never for code we author, and never as a backend runtime. There are exactly two, each pinning Node in its own island config rather than the root toolchain, so a developer who touches neither never installs it:
+  - **Node.js** solely to run vendored third-party tools that ship as Node programs — never for code we author, and never as a backend runtime. There are exactly three, none of them in the root toolchain, so a developer who touches none of them never installs Node:
     - The **Playwright end-to-end / visual test runner** ([ADR-0018](0018-testing-strategy.md)). Bun cannot reliably run a browser test runner (extra-fd pipe transport + worker IPC are the corners of `child_process` Bun has not matched), and this is a Node-ecosystem-wide gap, not a tool we can swap to avoid it. Scoped to the `e2e/` runner and CI.
     - The **Lowdefy admin console** ([ADR-0012](0012-internal-admin.md)), which we install and run rather than build — the runtime is upstream's choice, not ours. Its CLI aborts unless `pnpm` is on PATH, and `lowdefy start` shells out to `pnpm run start` → `next start`, whose bin is `#!/usr/bin/env node`; Bun cannot displace that without aliasing `node` and still needing pnpm anyway. Confined to the `apps/admin` image and that app's optional local dev tasks. No repo runtime code is Node.
+    - The **API mock** for the UI development loop ([ADR-0029](0029-api-mocking-and-ui-dev-loop.md)). The only OpenAPI-3.1-complete contract mock is a Node program, so it is consumed the way its runtime becomes irrelevant: as a pinned upstream container. It installs no Node anywhere, adds no `package.json` or lockfile, and runs on no machine but a developer's own.
 - Every escape-hatch service requires its own ADR documenting the measured need.
 
 **Rejected as primary:** Rust (velocity), JVM (footprint), Node.js backend (concurrency, type-safety), .NET (ecosystem gap), Python (wrong tool).
@@ -75,8 +76,8 @@ In priority order:
 - Every backend service is written in Go unless an ADR sanctions an escape hatch.
 - Go version is pinned by `.mise.toml`; services do not override it.
 - The frontend is TypeScript on Next.js, single app per [ADR-0002](0002-monorepo.md).
-- Bun is the only JS runtime for code we author — no Go service image, the frontend image, or any artifact built from our own source installs Node. The two exceptions are vendored third-party tools rather than our code: the Playwright e2e/visual test runner ([ADR-0018](0018-testing-strategy.md)), runner and CI only; and the Lowdefy admin console image ([ADR-0012](0012-internal-admin.md)).
-- Node is never pinned in the root `.mise.toml`. Each exception pins it in its own island config (`e2e/.mise.toml`, `apps/admin/.mise.toml`) against the root `[env] NODE_VERSION`, so there is one version to bump and no dev installs Node for an island they do not touch. A third Node exception requires amending this ADR.
+- Bun is the only JS runtime for code we author — no Go service image, the frontend image, or any artifact built from our own source installs Node. The three exceptions are vendored third-party tools rather than our code: the Playwright e2e/visual test runner ([ADR-0018](0018-testing-strategy.md)), runner and CI only; the Lowdefy admin console image ([ADR-0012](0012-internal-admin.md)); and the API mock container ([ADR-0029](0029-api-mocking-and-ui-dev-loop.md)), local development only.
+- Node is never pinned in the root `.mise.toml`. Each exception that installs Node pins it in its own island config (`e2e/.mise.toml`, `apps/admin/.mise.toml`) against the root `[env] NODE_VERSION`, so there is one version to bump and no dev installs Node for an island they do not touch. An exception that ships as a container (the API mock) pins no Node at all. A further Node exception requires amending this ADR.
 - A Rust service requires its own ADR demonstrating measured Go inadequacy or Rust-native ecosystem need.
 - A Python service requires its own ADR; it is permitted only for ML/data workloads.
 - JVM, .NET, and Node.js backends are not permitted, with or without an ADR.

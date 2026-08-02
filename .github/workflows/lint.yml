@@ -20,20 +20,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: jdx/mise-action@v2
-        with:
-          install: true
-          cache: true
+      - uses: ./.github/actions/setup
 
       - name: Validate commits (cocogitto)
         if: github.event_name == 'pull_request'
         run: cog check --ignore-merge-commits "origin/${{ github.base_ref }}..HEAD"
 
-      - name: Affected manifest
-        id: affected
-        run: |
-          mise run ci:affected > /tmp/affected.json
-          cat /tmp/affected.json
-
+      # No affected-scoping here, deliberately. Every linter behind `ci:lint` is a
+      # whole-repo analyser over a single Go module (`golangci-lint run ./...`,
+      # `biome ci .`, the repo-wide scripts/*.sh gates) — there is no per-service
+      # subset to hand it, and Go's build cache already makes the repeat cost small.
+      # `ci:affected` scopes what gets BUILT and PROMOTED (publish.yml,
+      # promote-on-merge.yml), not what gets analysed.
       - name: Run linters
         run: mise run ci:lint

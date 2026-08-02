@@ -70,7 +70,13 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        /** @description An organization. */
+        /**
+         * @description An organization.
+         * @example {
+         *       "id": "4a8b2d63-9e15-4c70-8d21-0f27f7f0a001",
+         *       "name": "Northwind Trading"
+         *     }
+         */
         Org: {
             /** Format: uuid */
             id: string;

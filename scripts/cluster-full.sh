@@ -165,11 +165,11 @@ echo "✓ all ArgoCD applications Synced + Healthy"
 
 # 6. Host-specific edge tail (cannot be GitOps — depends on per-machine state):
 #    local Traefik tuning, plus the /auth + landing routes to a host-run frontend
-#    and the frontend-dev EndpointSlice. The latter two live in cluster-edge.sh so
+#    and the frontend-dev EndpointSlice. The latter two live in cluster-edge-glue.sh so
 #    the start path (cluster-ensure.sh) and reboot recovery (cluster-heal.sh) can
 #    re-stamp them too — otherwise a stop/start drops the `frontend` route (404 at /).
 k apply -f infra/local/traefik-config.yaml
-bash scripts/cluster-edge.sh
+bash scripts/cluster-edge-glue.sh
 
 cat <<EOF
 

@@ -1,0 +1,49 @@
+{{/*
+ResourceQuota per namespace (ADR-0020) — the aggregate cap, so one namespace
+cannot consume the cluster.
+
+This is the sharpest object in the chart and the one most likely to hurt, so the
+contract is worth stating plainly: a ResourceQuota does NOT evict anything. It
+rejects *new* pods once the namespace's summed requests would exceed the cap. The
+failure therefore shows up as a pod that never gets created, with the reason on the
+owning ReplicaSet/StatefulSet — not on the pod, because there is no pod. That is
+the "silent pending pod" ADR-0020 calls out as unacceptable; `mise run
+lint:resource-governance` and the runbook exist so it is legible instead.
+
+Two invariants this depends on:
+
+  1. Every container must declare (or be defaulted into) every resource the quota
+     tracks. A quota on `limits.memory` rejects any pod with a container that has
+     no memory limit. The LimitRange at wave -4 is what guarantees this, which is
+     why it sorts before this file.
+  2. The cap must exceed the steady-state sum of requests, or the namespace cannot
+     even reach its own baseline. Sized from measurement, not taste — see values.
+
+kube-system deliberately has NO quota; see the values comment for why.
+*/}}
+{{- range $ns, $cfg := .Values.resourceQuotas }}
+{{- if $cfg.enabled }}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: namespace-cap
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: resource-governance
+    app.kubernetes.io/part-of: platform
+  annotations:
+    # Wave -3: strictly after the LimitRange that makes its tracked resources
+    # declarable. Reversing these two is the classic way to wedge a bring-up.
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  hard:
+    requests.cpu: {{ $cfg.requestsCPU | quote }}
+    requests.memory: {{ $cfg.requestsMemory | quote }}
+    # No `limits.cpu` key: nothing in this platform sets a CPU limit (ADR-0020), so
+    # a quota on it would be a cap on zero — and worse, it would force every future
+    # container to declare a cpu limit just to be admitted, quietly reintroducing
+    # the throttling policy we rejected.
+    limits.memory: {{ $cfg.limitsMemory | quote }}
+{{- end }}
+{{- end }}

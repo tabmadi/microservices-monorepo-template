@@ -27,3 +27,4 @@ configMapGenerator:
       - applications.json
       - service-detail.json
       - platform-components.json
+      - load-test.json

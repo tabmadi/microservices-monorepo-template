@@ -196,8 +196,12 @@ apps (which itself requires a new ADR).
 
 GitHub Actions is the CI provider. Workflows live in `.github/workflows/`:
 
-- `lint.yml`, `test.yml`, `build.yml` route through `mise run ci:affected`.
-- `ci-drift.yml` runs `mise run gen` and fails on `git diff --exit-code`.
+- `lint.yml`, `test.yml`, `build.yml` route through `mise run ci:lint` / `ci:test` / `ci:build`. These are whole-repo
+  over the single Go module, not affected-scoped: the linters have no per-service subset to take, and Go's build cache
+  already makes the repeat cost small. `ci:affected` scopes what gets built and promoted, not what gets analysed.
+- `ci-drift.yml` runs `mise run ci:gen` (regenerate + reformat) and fails on `git diff --exit-code`.
+- Every workflow gets its toolchain from the `./.github/actions/setup` composite action, so mise setup and the Go cache
+  key are defined exactly once.
 - `publish.yml` builds and pushes container images on merges to `master` (the "release" workflow name is reserved for
   tag-driven prod promotion — see [ADR-0013](0013-release-and-versioning.md)).
 

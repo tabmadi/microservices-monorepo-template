@@ -11,7 +11,20 @@ paths:
       description: List all products.
       tags: [products]
       responses:
-        "200": { description: The product list, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Product" } } } } }
+        "200":
+          description: The product list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Product" }
+                # List examples are load-bearing (ADR-0029): the API mock serves them
+                # verbatim, and an unconstrained array schema generates an empty list —
+                # a UI built against that has no rows, no pagination, and no truncation.
+                example:
+                  - { id: 6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c001, name: Aeron chair, price_cents: 129900 }
+                  - { id: 6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c002, name: Standing desk, price_cents: 89900 }
+                  - { id: 6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c003, name: Monitor arm, price_cents: 14900 }
         default: { $ref: "#/components/responses/Error" }
     post:
       operationId: createProduct
@@ -84,6 +97,10 @@ components:
         id:          { type: string, format: uuid }
         name:        { type: string }
         price_cents: { type: integer, minimum: 0 }
+      # One example on the schema serves every response that references it — the
+      # detail page, the create/update echo, the developer portal, and the API mock
+      # (ADR-0008, ADR-0029). It is code-reviewed data, not generated noise.
+      example: { id: 6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c001, name: Aeron chair, price_cents: 129900 }
     ProductInput:
       type: object
       description: Request body to create a product.

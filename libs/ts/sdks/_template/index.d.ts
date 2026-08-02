@@ -34,7 +34,13 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        /** @description A template item. */
+        /**
+         * @description A template item.
+         * @example {
+         *       "id": "0f27f7f0-1111-4000-8000-000000000001",
+         *       "name": "First item"
+         *     }
+         */
         Item: {
             /** Format: uuid */
             id: string;

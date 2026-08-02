@@ -44,7 +44,16 @@ paths:
       responses:
         "200":
           description: The identities.
-          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Identity" } } } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Identity" }
+                # An unconstrained array generates an empty list, which is the one
+                # answer a changelist cannot be built against (ADR-0029).
+                example:
+                  - { id: 019a3f8c-6d21-7c4b-8e55-0f27f7f0b001, email: operator@e2e.localtest.me, name: Test Operator, operator: true }
+                  - { id: 019a3f8c-6d21-7c4b-8e55-0f27f7f0b002, email: user@e2e.localtest.me, name: Test User, operator: false }
         default: { $ref: "#/components/responses/Error" }
   /identities/{id}:
     get:
@@ -125,6 +134,7 @@ components:
       properties:
         id:    { type: string }
         email: { type: string }
+      example: { id: 019a3f8c-6d21-7c4b-8e55-0f27f7f0b001, email: operator@e2e.localtest.me }
     Identity:
       type: object
       description: A Kratos identity, flattened from its traits for the admin changelist.
@@ -134,6 +144,7 @@ components:
         email:    { type: string }
         name:     { type: string }
         operator: { type: boolean }
+      example: { id: 019a3f8c-6d21-7c4b-8e55-0f27f7f0b002, email: user@e2e.localtest.me, name: Test User, operator: false }
     IdentityUpdate:
       type: object
       description: The editable traits of an identity. Email is the login identifier and is not editable here.

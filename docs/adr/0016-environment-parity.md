@@ -83,22 +83,34 @@ they are not managed Kubernetes, so there is no control-plane bill to cut by mov
 
 Two independent axes, resolved by two independent mechanisms:
 
-- **What platform components are up** — a small set of named **profiles**, each a thin overlay on the `local` values
-  that toggles component `enabled` flags. Because every component is the same chart gated by a value, a profile is a
-  selection, not a copy:
+- **What platform components are up** — a small set of named **profiles**, each naming a subset of the platform's
+  components. A profile is a **selection, not a copy**: every component it brings up is the same chart with the same
+  `infra/gitops/platform/local/values.yaml` overlay the full tier uses, and the shared stand-in manifest
+  (`infra/local/deps.yaml`) is sliced by the `local.platform/component` label rather than forked. So there is exactly one
+  local values file, and a profile cannot drift from the tier above it:
 
   | Profile | Components up | Typical user |
   |---------|---------------|--------------|
   | `min` | Postgres only | backend, no workflows |
   | `backend` | + Temporal + OpenFGA | backend with workflows |
+  | `edge` (`cluster:edge`) | Traefik + cert-manager + Kratos + Oathkeeper + Postgres, application data served by the API mock ([ADR-0029](0029-api-mocking-and-ui-dev-loop.md)) | frontend building authenticated UI |
   | `obs` | observability + Faro/Grafana | frontend RUM / dashboards |
   | `full` | everything | operator end-to-end |
+
+  The `edge` profile is the one that inverts the usual mock/real split: the identity and edge
+  components stay **real** because they are cheap and their behaviour (cookies, CSRF, session
+  expiry, AAL, `401`/`403`) is exactly what a UI must be built against, while the application
+  services — the expensive part — are replaced by their own OpenAPI contract. It is the reason the
+  frontend needs no development-only authentication code
+  ([ADR-0014](0014-frontend.md), [ADR-0029](0029-api-mocking-and-ui-dev-loop.md)).
 
 - **Which service I iterate on** — in the inner loop you run exactly one service natively (the one under change); the
   rest are stand-ins or absent. When a service must run *in* the cluster (edge/auth/e2e), `service:deploy -- <svc>` does a
   one-shot build-import-upgrade ([ADR-0003](0003-cluster-topology.md)). This axis never leaks into platform composition.
 
-Profiles stay a handful of composable toggles, not per-engineer snowflakes.
+Profiles stay a handful of composable selections, not per-engineer snowflakes. ArgoCD is the engine for `full` only;
+the lighter profiles are applied imperatively for the same reason the inner loop is (see below), which is also why
+`edge` runs the ephemeral Postgres stand-in rather than CNPG.
 
 ### GitOps locally: inner loop is native, full tier is ArgoCD
 
@@ -155,6 +167,9 @@ A small, enumerated set of manifests has no production analogue, and each states
   (the Ansible `k3s_server` role disables the bundled one).
 - `infra/local/edge-auth.yaml` — routes `/auth` + landing to a host-run `next dev`, a dev-loop convenience
   ([ADR-0014](0014-frontend.md)); prod deploys the built frontend image in-cluster.
+- `infra/local/mock.yaml` — the API mock serving the committed OpenAPI projection on `/api` in the
+  `edge` profile ([ADR-0029](0029-api-mocking-and-ui-dev-loop.md)). It runs on no other tier and in
+  no deployed environment.
 - A self-signed wildcard TLS issuer instead of cert-manager + Let's Encrypt — the same cert-manager mechanism, a local
   ClusterIssuer.
 

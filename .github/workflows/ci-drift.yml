@@ -1,12 +1,6 @@
-# Drift check (ADR-0002, ADR-0008). Regenerate AND reformat everything, then fail if
-# anything changed.
-#
-# Formatting is part of this check, not of `lint`: the linters are analysers
-# (shellcheck, golangci-lint run, biome lint, rumdl check) and none of them rewrite
-# code, so a correctly-analysed-but-misformatted file passes `mise run lint` cleanly.
-# Only the formatters (shfmt, golangci-lint fmt, biome format, rumdl fmt) can tell,
-# and they do it by rewriting — which is exactly the shape this drift job already
-# handles for generated code.
+# Drift check (ADR-0002, ADR-0008): regenerate AND reformat everything, then fail if
+# anything changed. The check is `mise run ci:gen`; why formatting is part of it,
+# and not of `lint`, is documented at that task in .mise.toml.
 name: ci-drift
 
 on:
@@ -29,17 +23,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: jdx/mise-action@v2
-        with:
-          install: true
-          cache: true
+      - uses: ./.github/actions/setup
 
-      - name: Regenerate and reformat
-        run: mise run gen && mise run format
-
-      - name: Fail on drift
+      # The check itself lives in `ci:gen` (.mise.toml) so this job and the lefthook
+      # gen-drift hook cannot drift apart from each other. This step only translates
+      # its exit code into a GitHub annotation.
+      - name: Regenerate, reformat, fail on drift
         run: |
-          if ! git diff --exit-code; then
-            echo "::error::Generated or formatted artifacts are out of date. Run 'mise run gen && mise run format' and commit the result."
+          if ! mise run ci:gen; then
+            echo "::error::Generated or formatted artifacts are out of date. Run 'mise run ci:gen' and commit the result."
             exit 1
           fi

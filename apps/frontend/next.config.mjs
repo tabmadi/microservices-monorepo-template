@@ -1,14 +1,20 @@
 // Next.js config (ADR-0014). Standalone output is required for the Bun-only
 // Dockerfile. All first-party code lives inside the app, so no transpilePackages.
 
-// Server Actions CSRF allowlist (ADR-0009, ADR-0014). Next checks the request
-// Origin against this list; pair it with the edge Origin check and SameSite=Lax
-// session cookie. Set APP_ORIGIN per env (e.g. dev.example.com).
-const appOrigin = process.env.APP_ORIGIN;
-const allowedOrigins = appOrigin ? [appOrigin] : [];
-const prismMockEnabled =
-  process.env.NODE_ENV === "development" && process.env.PRISM_MOCK_ENABLED === "true";
-const prismApiBase = process.env.API_BASE_URL;
+// Server Actions CSRF allowlist (ADR-0009, ADR-0014), derived from the one edge
+// origin this app knows (EDGE_ORIGIN, see src/lib/server-fetch/server.ts) so the
+// two never drift. Next compares the list against `new URL(origin).host`, which
+// INCLUDES the port — hence `.host`, not the bare hostname: a `dev.localtest.me`
+// entry can never match an `https://dev.localtest.me:8443` origin.
+//
+// This list is only consulted when Origin ≠ (X-Forwarded-)Host. ADR-0017 puts `/`
+// and `/api` on the same origin, so that is already the common case and this is
+// defence in depth. Note it is BUILD-time: `output: "standalone"` freezes this
+// config into server.js, so a deployed image only carries an entry if the build
+// passed EDGE_ORIGIN — which pins that image to one env host and breaks the
+// build-once/promote-by-digest flow in ADR-0013. Leave it unset in CI builds.
+const edgeOrigin = process.env.EDGE_ORIGIN;
+const allowedOrigins = edgeOrigin ? [new URL(edgeOrigin).host] : [];
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -39,20 +45,6 @@ const nextConfig = {
         headers: [{ key: "X-App-Version", value: process.env.SERVICE_VERSION ?? "dev" }],
       },
     ]);
-  },
-  // Preserve the browser client's same-origin `/api` contract. Prism deliberately
-  // serves OpenAPI paths without the document's `servers: /api` prefix, so remove
-  // only that prefix on the development-only upstream hop.
-  rewrites() {
-    if (!prismMockEnabled) {
-      return [];
-    }
-    return [
-      {
-        source: "/api/:path*",
-        destination: `${prismApiBase}/:path*`,
-      },
-    ];
   },
 };
 

@@ -1,0 +1,30 @@
+{{/*
+PriorityClass tiers (ADR-0020): platform-critical > product > batch.
+
+These are what make "CPU requests, no CPU limits" safe. Without CPU limits a
+workload may burst into spare capacity — which is the point, since temporal-history
+measurably needs ~2.1 cores under checkout load while idling near zero. What stops
+that bursting from starving a Core component is not a limit, it is the pair of
+(a) CPU requests, which the scheduler and the kernel's CFS shares both honour, and
+(b) these priorities, which decide who dies when the node is genuinely out of memory.
+
+Sync-wave -5: before the LimitRange and ResourceQuota below, and before any
+workload that names one of these classes. A pod naming a PriorityClass that does
+not exist yet is REJECTED outright, so ordering here is not cosmetic.
+*/}}
+{{- range $name, $tier := .Values.priorityClasses }}
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: resource-governance
+    app.kubernetes.io/part-of: platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+value: {{ $tier.value }}
+globalDefault: {{ $tier.globalDefault | default false }}
+preemptionPolicy: {{ $tier.preemptionPolicy | default "PreemptLowerPriority" }}
+description: {{ $tier.description | quote }}
+{{- end }}

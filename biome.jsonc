@@ -122,6 +122,30 @@
       "formatter": { "enabled": false }
     },
     {
+      // k6 load scenarios (ADR-0027). Formatted like the rest of the repo, but four
+      // rules are structurally impossible for a k6 script to satisfy — they are
+      // disabled here rather than excluding perf/ wholesale (as e2e/ is), so every
+      // OTHER rule still catches real bugs in scenario code.
+      "includes": ["**/perf/**"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            // `k6/http`, `k6/metrics`, … are engine builtins resolved by k6 itself.
+            // There is no package.json to declare them in, and there must not be.
+            "noUndeclaredDependencies": "off",
+            // `__ENV` is k6's environment global.
+            "noUndeclaredVariables": "off"
+          },
+          // A scenario's entrypoint is `export default function` — k6's contract,
+          // not a style choice.
+          "style": { "noDefaultExport": "off" },
+          // console is the only output channel inside the k6 VM; there is no slog
+          // and no OTLP logger to reach for (ADR-0011's rule addresses services).
+          "suspicious": { "noConsole": "off" }
+        }
+      }
+    },
+    {
       // Canonical Oathkeeper access rules (ADR-0010): hand-curated one-rule-per-line
       // for readability and consumed verbatim as a Helm --set-file string. Biome's
       // JSON formatter collapses it to one line — never format this artefact.

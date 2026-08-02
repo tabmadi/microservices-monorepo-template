@@ -13,7 +13,17 @@ paths:
       description: List all organizations.
       tags: [orgs]
       responses:
-        "200": { description: The organization list, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Org" } } } } }
+        "200":
+          description: The organization list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Org" }
+                # Served verbatim by the API mock (ADR-0029).
+                example:
+                  - { id: 4a8b2d63-9e15-4c70-8d21-0f27f7f0a001, name: Northwind Trading }
+                  - { id: 4a8b2d63-9e15-4c70-8d21-0f27f7f0a002, name: Contoso Rail }
         default: { $ref: "#/components/responses/Error" }
     post:
       operationId: createOrg
@@ -102,6 +112,7 @@ components:
       properties:
         id:   { type: string, format: uuid }
         name: { type: string }
+      example: { id: 4a8b2d63-9e15-4c70-8d21-0f27f7f0a001, name: Northwind Trading }
     OrgInput:
       type: object
       description: Request body to create an organization.

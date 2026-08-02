@@ -5,8 +5,15 @@
 #   - full  — nightly + pre-release (and manual). Every dashboard + visual baseline.
 #   - smoke — per-PR, opt-in via the `e2e-smoke` label, for risky changes only.
 #
-# NOTE: cluster:full is heavy (~16GB RAM). Run on a large self-hosted runner; the
-# default GitHub runner is undersized for the full platform.
+# The nightly is activity-gated (see the `gate` job): a dormant repo re-testing an
+# unchanged commit every night is noise, not signal.
+#
+# NOTE: cluster:full is heavy (~16GB RAM), which is the whole of a standard
+# GitHub-hosted runner (4 vCPU / 16GB). It does fit — the nightly perf lane brings
+# the full platform up on ubuntu-latest in ~17min — but with no headroom, so the
+# bring-up is the slowest and most fragile part of these jobs. A larger runner buys
+# margin, not capability; move to one if bring-up flakiness (not test failures)
+# becomes the common red.
 name: e2e
 
 on:
@@ -30,26 +37,31 @@ permissions:
   contents: read
 
 jobs:
+  # Is tonight's run worth a cluster bring-up? Only the cron asks — an explicit
+  # trigger (tag, dispatch) always means yes.
+  gate:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/_nightly-gate.yml
+
   full:
     # Nightly, pre-release tags, and manual full runs — never on a PR.
+    needs: gate
     if: >-
+      needs.gate.outputs.run == 'true' && (
       github.event_name == 'schedule' ||
       github.event_name == 'push' ||
-      (github.event_name == 'workflow_dispatch' && inputs.suite == 'full')
+      (github.event_name == 'workflow_dispatch' && inputs.suite == 'full'))
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: jdx/mise-action@v2
-        with:
-          install: true
-          cache: true
+      - uses: ./.github/actions/setup
       - name: Provision the local SOPS age key
         run: mise run secrets:age
       - name: Bring up cluster:full
-        run: mise run cluster:full:up
+        run: mise run cluster:full
       - name: Install Playwright (Node island)
         run: mise run e2e:install
       - name: Run full e2e + visual suite
@@ -65,7 +77,7 @@ jobs:
           retention-days: 7
       - name: Tear down
         if: always()
-        run: mise run cluster:full:purge
+        run: mise run cluster:delete
 
   smoke:
     # Label-gated per-PR: a golden path + a key dashboard render. Opt-in so an
@@ -79,14 +91,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: jdx/mise-action@v2
-        with:
-          install: true
-          cache: true
+      - uses: ./.github/actions/setup
       - name: Provision the local SOPS age key
         run: mise run secrets:age
       - name: Bring up cluster:full
-        run: mise run cluster:full:up
+        run: mise run cluster:full
       - name: Install Playwright (Node island)
         run: mise run e2e:install
       - name: Run smoke suite
@@ -102,4 +111,4 @@ jobs:
           retention-days: 7
       - name: Tear down
         if: always()
-        run: mise run cluster:full:purge
+        run: mise run cluster:delete

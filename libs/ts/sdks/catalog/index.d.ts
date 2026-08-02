@@ -53,7 +53,14 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        /** @description A catalog product. */
+        /**
+         * @description A catalog product.
+         * @example {
+         *       "id": "6f7a1c48-1a9d-4b1e-9a2c-0f27f7f0c001",
+         *       "name": "Aeron chair",
+         *       "price_cents": 129900
+         *     }
+         */
         Product: {
             /** Format: uuid */
             id: string;

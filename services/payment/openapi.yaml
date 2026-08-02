@@ -14,7 +14,19 @@ paths:
       description: List all charges.
       tags: [charges]
       responses:
-        "200": { description: The charge list, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Charge" } } } } }
+        "200":
+          description: The charge list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Charge" }
+                # Served verbatim by the API mock (ADR-0029); the statuses vary so the
+                # UI has to render every one of them.
+                example:
+                  - { id: 7d1e4a95-3c82-4f17-9b06-0f27f7f0f001, order_id: 2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001, amount_cents: 259800, status: settled }
+                  - { id: 7d1e4a95-3c82-4f17-9b06-0f27f7f0f002, order_id: 2c9f0b71-5d64-4a0e-9b83-0f27f7f0d002, amount_cents: 89900, status: pending }
+                  - { id: 7d1e4a95-3c82-4f17-9b06-0f27f7f0f003, order_id: 2c9f0b71-5d64-4a0e-9b83-0f27f7f0d003, amount_cents: 59600, status: refunded }
         default: { $ref: "#/components/responses/Error" }
     post:
       operationId: createCharge
@@ -94,6 +106,9 @@ components:
         run_id: { type: string }
         status: { type: string, enum: [running, completed, failed, cancelled] }
         result_url: { type: string, format: uri, description: "GET to fetch terminal status + result" }
+      # See orders: `running` is what the real 202 returns, and the mock's poll never
+      # progresses past it (ADR-0029).
+      example: { id: charge-7d1e4a95-3c82-4f17-9b06-0f27f7f0f001, run_id: 019a3f8c-6d21-7c4b-8e55-0f27f7f0e002, status: running, result_url: /api/charges/7d1e4a95-3c82-4f17-9b06-0f27f7f0f001 }
     ChargeInput:
       type: object
       description: Request body to create a charge.
@@ -116,3 +131,4 @@ components:
         order_id:     { type: string, format: uuid }
         amount_cents: { type: integer }
         status:       { type: string, enum: [pending, settled, failed, refunded] }
+      example: { id: 7d1e4a95-3c82-4f17-9b06-0f27f7f0f001, order_id: 2c9f0b71-5d64-4a0e-9b83-0f27f7f0d001, amount_cents: 259800, status: settled }

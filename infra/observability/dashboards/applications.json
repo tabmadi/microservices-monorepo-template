@@ -4,6 +4,15 @@
   "schemaVersion": 39,
   "tags": ["service", "applications", "overview", "poc"],
   "description": "POC (ADR-0025): Applications — the full workload directory, one click below the Overview landing page (ADR-0026). One row per workload in the selected namespace, driven by kubeletstats so EVERY pod is listed — not just the traced ones. CPU, memory and network come from the kubelet; Req/s, Errors/s and p95 latency come from the stable OTel http.server.request.duration histogram and fill in for any service currently serving HTTP traffic (idle HTTP servers show blank RED — the counters have no recent samples, not a missing-instrumentation gap). Up/Desired replicas, memory limits and the %-of-limit gauges come from the otel-cluster singleton (k8s_cluster receiver) + kubeletstats limit_utilization; blank means no Deployment / no limit set, not zero. Live pod status and events live in Headlamp — this page answers 'is something wrong?', Headlamp answers 'what exactly'. Click a workload to open its detail page.",
+  "links": [
+    {
+      "title": "Load test ▶",
+      "type": "link",
+      "url": "/d/load-test/load-test?${__url_time_range}",
+      "icon": "external link",
+      "tooltip": "Results of a deliberate k6 load run (ADR-0027): throughput and latency against what each workload cost. Empty unless the time range covers a run. Not linked from Overview by design — ADR-0026 reserves the landing page for incident triage, and this is a planned experiment."
+    }
+  ],
   "templating": {
     "list": [
       {

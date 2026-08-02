@@ -101,12 +101,26 @@ export interface components {
             email: string;
             password: string;
         };
-        /** @description A created operator. */
+        /**
+         * @description A created operator.
+         * @example {
+         *       "id": "019a3f8c-6d21-7c4b-8e55-0f27f7f0b001",
+         *       "email": "operator@e2e.localtest.me"
+         *     }
+         */
         Operator: {
             id: string;
             email: string;
         };
-        /** @description A Kratos identity, flattened from its traits for the admin changelist. */
+        /**
+         * @description A Kratos identity, flattened from its traits for the admin changelist.
+         * @example {
+         *       "id": "019a3f8c-6d21-7c4b-8e55-0f27f7f0b002",
+         *       "email": "user@e2e.localtest.me",
+         *       "name": "Test User",
+         *       "operator": false
+         *     }
+         */
         Identity: {
             id: string;
             email: string;
