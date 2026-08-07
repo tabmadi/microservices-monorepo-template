@@ -39,7 +39,7 @@ and `foundations/dot-icon` as its closure. React Aria's `Button` strips
 `Table` must be rendered from a Client Component: React Aria builds its collection
 by introspecting `Row`/`Cell` children, which fails if they're created in a Server
 Component (they arrive as opaque client references). RSC pages fetch the data and
-pass it to a `"use client"` child that renders the table (see `panel/products/products-table.tsx`).
+pass it to a `"use client"` child that renders the table (see `panel/products/_components/products-table.tsx`).
 
 | Tracked                            | Version | Synced on  |
 |------------------------------------|---------|------------|

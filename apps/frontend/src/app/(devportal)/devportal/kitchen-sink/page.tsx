@@ -10,7 +10,7 @@ import { LoadingIndicator } from "@/components/application/loading-indicator/loa
 import { Badge } from "@/components/base/badges/badges";
 import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
-import { TableDemo } from "./table-demo";
+import { TableDemo } from "./_components/table-demo";
 
 export const metadata: Metadata = { title: "UI kitchen sink" };
 
