@@ -4,15 +4,9 @@
 // result_url points at the resource's GET endpoint (e.g. /api/orders/<id>), whose
 // payload carries the terminal domain status. This helper polls that URL until the
 // resource reaches a terminal state.
-export type WorkflowHandle = {
-  id: string;
-  run_id: string;
-  // Temporal run status at enqueue time; always "running" for a fresh handle.
-  status: "running" | "completed" | "failed" | "cancelled";
-  // GET to fetch the terminal status + result. Omitted only by handles that carry
-  // the result inline (none today).
-  result_url?: string;
-};
+import type { components } from "@/sdks/orders";
+
+export type WorkflowHandle = components["schemas"]["WorkflowHandle"];
 
 // The terminal-state shape shared by the resources a workflow settles (orders,
 // charges): a domain status string. "pending"/"running" are non-terminal.

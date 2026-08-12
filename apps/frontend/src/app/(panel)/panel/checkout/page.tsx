@@ -17,7 +17,8 @@ import { Badge } from "@/components/base/badges/badges";
 import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { createBrowserClient } from "@/lib/server-fetch/client";
-import { pollWorkflow, type WorkflowHandle } from "@/lib/server-fetch/workflow-handle";
+import { pollWorkflow } from "@/lib/server-fetch/workflow-handle";
+import type { components, paths } from "@/sdks/orders";
 import { panel } from "@/strings/panel";
 
 const schema = z.object({
@@ -25,16 +26,7 @@ const schema = z.object({
   quantity: z.number().int().positive(),
 });
 
-type FormValues = z.infer<typeof schema>;
-
-type OrdersPaths = {
-  "/orders": {
-    post: {
-      requestBody: { content: { "application/json": FormValues } };
-      responses: { 202: { content: { "application/json": WorkflowHandle } } };
-    };
-  };
-};
+type FormValues = components["schemas"]["CheckoutInput"];
 
 type Status = { text: string; tone: BadgeColors };
 
@@ -60,7 +52,7 @@ const renderProductId = ({
 
 export default function Checkout() {
   const [status, setStatus] = useState<Status>({ text: panel.checkout.idle, tone: "gray" });
-  const orders = createBrowserClient<OrdersPaths>();
+  const orders = createBrowserClient<paths>();
 
   const { control, handleSubmit, formState } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -78,7 +70,7 @@ export default function Checkout() {
     try {
       // Poll the order (handle.result_url) until it reaches a terminal status; the
       // saga confirms it once catalog + payment succeed (ADR-0006).
-      const order = await pollWorkflow<{ id: string; status: string }>(data);
+      const order = await pollWorkflow<components["schemas"]["Order"]>(data);
       setStatus({
         text: order.status,
         tone: order.status === "confirmed" ? "success" : "error",
